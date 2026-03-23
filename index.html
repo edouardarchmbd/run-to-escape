@@ -1121,16 +1121,31 @@ async function fetchPOIsNominatim(lat, lng, radiusM) {
   const seen = new Set();
   const pois = flat
     .filter(r => {
-      if (!r.display_name || seen.has(r.osm_id)) return false;
+      if (!r.display_name) return false;
+      // Dédoublonne par osm_id ET par coordonnées arrondies (évite doublons proches)
+      const coordKey = `${(+r.lat).toFixed(4)},${(+r.lon).toFixed(4)}`;
+      if (seen.has(r.osm_id) || seen.has(coordKey)) return false;
       seen.add(r.osm_id);
+      seen.add(coordKey);
       return true;
     })
-    .map(r => ({
-      tags: { name: r.display_name.split(',')[0].trim() },
-      lat: +r.lat, lon: +r.lon,
-      _source: 'nominatim'
-    }))
-    // Filtre par distance — large : entre 100m et radiusM * 1.5
+    .map(r => {
+      // Nom affiché : préfère le nom OSM (type "Parc des Sports") plutôt que l'adresse
+      // r.name existe pour les lieux nommés, sinon on prend la première partie du display_name
+      const parts = r.display_name.split(',');
+      // Évite les noms qui ressemblent à une adresse (commencent par un chiffre)
+      const firstName = parts[0].trim();
+      const secondName = parts[1]?.trim() || '';
+      const name = /^\d/.test(firstName) && secondName
+        ? `${secondName}${parts[2] ? ', ' + parts[2].trim() : ''}`
+        : firstName;
+      return {
+        tags: { name: name.slice(0, 60) }, // 60 chars max
+        lat: +r.lat, lon: +r.lon,
+        _fullName: r.display_name,
+        _source: 'nominatim'
+      };
+    })
     .filter(p => {
       const d = haversine(lat, lng, p.lat, p.lon);
       return d >= 100 && d <= radiusM * 1.5;
@@ -1260,14 +1275,19 @@ async function fetchAndPrepareMission() {
     demo = true;
   }
 
-  // ── Dédoublonnage par nom (garde un seul exemplaire par nom) ──
-  const seen = new Set();
-  const unique = (demo ? demoPOIs(state.lat, state.lng, 0, 9999) : allPOIs)
-    .filter(p => {
-      if (!p.tags?.name || seen.has(p.tags.name)) return false;
-      seen.add(p.tags.name);
-      return true;
-    });
+  // ── Dédoublonnage : par nom ET par coordonnées (50m de tolérance) ──
+  const rawPool = demo ? demoPOIs(state.lat, state.lng, 0, 9999) : allPOIs;
+  const seenNames = new Set();
+  const unique = rawPool.filter(p => {
+    if (!p.tags?.name) return false;
+    // Clé coordonnée arrondie à ~55m
+    const coordKey = `${p.lat.toFixed(3)},${p.lon.toFixed(3)}`;
+    const nameKey  = p.tags.name.toLowerCase().trim();
+    if (seenNames.has(coordKey) || seenNames.has(nameKey)) return false;
+    seenNames.add(coordKey);
+    seenNames.add(nameKey);
+    return true;
+  });
 
   console.log(`[Mission] ${unique.length} POIs uniques`);
 
@@ -1299,10 +1319,10 @@ async function fetchAndPrepareMission() {
 
     const candidates2 = unique
       .filter(p => {
-        if (p.tags.name === state.poi1.tags.name) return false;
         const dFromStart = haversine(state.lat, state.lng, p.lat, p.lon);
         const dFromPoi1  = haversine(poi1Lat, poi1Lon, p.lat, p.lon);
-        // Doit être à plus de 300m de poi1 ET entre 400-1500m du départ
+        // Distinct = pas le même endroit physiquement (>300m de poi1)
+        // ET dans une fourchette raisonnable depuis le départ
         return dFromPoi1 > 300 && dFromStart >= 400 && dFromStart <= 1500;
       })
       .map(p => ({ p, d: haversine(state.lat, state.lng, p.lat, p.lon) }))
