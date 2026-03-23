@@ -1209,6 +1209,41 @@ function demoPOIs(lat, lng, rMin, rMax) {
   return r;
 }
 
+/* Génère un point fictif dans un rayon de 500-900m autour du départ,
+   dans une direction opposée à poi1 — garantit une vraie marche sans
+   dépendre d'une base de données de lieux */
+function generateFictionalPOI(lat, lng, excludePOI) {
+  // Direction de poi1 par rapport au départ
+  const poi1Bearing = Math.atan2(excludePOI.lon - lng, excludePOI.lat - lat);
+
+  // On choisit une direction opposée (+120° à +240° de décalage) pour éviter le même secteur
+  const offset = (Math.PI * 2 / 3) + Math.random() * (Math.PI * 2 / 3); // 120–240°
+  const bearing = poi1Bearing + offset;
+
+  // Distance aléatoire entre 500 et 900m
+  const dist = 500 + Math.random() * 400;
+
+  // Conversion distance + angle → coordonnées GPS
+  const R = 6371000;
+  const dLat = (dist * Math.cos(bearing)) / R * (180 / Math.PI);
+  const dLon = (dist * Math.sin(bearing)) / (R * Math.cos(lat * Math.PI / 180)) * (180 / Math.PI);
+
+  // Noms de lieux génériques crédibles pour n'importe quelle ville
+  const fictionalNames = [
+    "Point de rendez-vous Nord", "Zone de transit Est",
+    "Secteur Bravo", "Point extraction Sud",
+    "Zone de couverture Ouest", "Secteur Charlie",
+    "Point de ralliement", "Zone tampon"
+  ];
+
+  return {
+    tags: { name: fictionalNames[Math.floor(Math.random() * fictionalNames.length)] },
+    lat: lat + dLat,
+    lon: lng + dLon,
+    _fictional: true
+  };
+}
+
 async function fetchAndPrepareMission() {
   showLoading('Recherche des points d\'intérêt…');
   let pois1 = [], pois2 = [], demo = false;
@@ -1261,9 +1296,26 @@ async function fetchAndPrepareMission() {
   if (!pois1.length) { demo = true; pois1 = demoPOIs(state.lat, state.lng, 0, 9999); }
   if (!pois2.length) { demo = true; pois2 = demoPOIs(state.lat, state.lng, 0, 9999); }
 
+  // Choisit poi1
   state.poi1 = pick(pois1);
-  pois2 = pois2.filter(p => p.tags.name !== state.poi1.tags.name);
-  state.poi2 = pick(pois2) || state.poi1;
+
+  // Exclut poi1 de la liste poi2 — comparaison sur nom ET distance
+  const poi1Lat = state.poi1.lat, poi1Lon = state.poi1.lon;
+  pois2 = pois2.filter(p =>
+    p.tags.name !== state.poi1.tags.name &&
+    haversine(poi1Lat, poi1Lon, p.lat, p.lon) > 150 // au moins 150m d'écart
+  );
+
+  // Si plus rien dans pois2, on génère un point fictif dans la zone
+  if (!pois2.length) {
+    const allPois = [...pois1].filter(p =>
+      p.tags.name !== state.poi1.tags.name &&
+      haversine(poi1Lat, poi1Lon, p.lat, p.lon) > 150
+    );
+    pois2 = allPois.length ? allPois : [generateFictionalPOI(state.lat, state.lng, state.poi1)];
+  }
+
+  state.poi2 = pick(pois2) || generateFictionalPOI(state.lat, state.lng, state.poi1);
   state.isDemo = demo;
 
   hideLoading();
