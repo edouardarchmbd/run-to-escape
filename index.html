@@ -897,7 +897,7 @@ function resolveImgSrc(src) {
    ============================================================ */
 const state = {
   address: '', lat: null, lng: null,
-  poi1: null, poi2: null,
+  poi1: null, poi2: null, poi3: null,
   startTime: null, isDemo: false
 };
 
@@ -1342,8 +1342,36 @@ async function fetchAndPrepareMission() {
     state.poi2 = generateFictionalPOI(state.lat, state.lng, state.poi1);
   }
 
+  // ── Sélection poi3 : troisième quadrant différent de poi1 et poi2 ──
+  // Course 3 = "point transmis" → doit être dans un secteur encore différent
+  const usedQuadrants = new Set([
+    state.poi2._fictional ? null : getQuadrant(state.poi2),
+    getQuadrant(state.poi1)
+  ]);
+
+  const candidates3 = unique.filter(p => {
+    const q = getQuadrant(p);
+    const key = `${p.lat.toFixed(3)},${p.lon.toFixed(3)}`;
+    const dFrom1 = haversine(state.poi1.lat, state.poi1.lon, p.lat, p.lon);
+    const dFrom2 = haversine(state.poi2.lat, state.poi2.lon, p.lat, p.lon);
+    return !usedQuadrants.has(q) && dFrom1 > 200 && dFrom2 > 200;
+  });
+
+  // Fallback : n'importe quel POI à >300m de poi1 ET poi2
+  const fallback3 = unique.filter(p => {
+    const dFrom1 = haversine(state.poi1.lat, state.poi1.lon, p.lat, p.lon);
+    const dFrom2 = haversine(state.poi2.lat, state.poi2.lon, p.lat, p.lon);
+    return dFrom1 > 300 && dFrom2 > 300;
+  });
+
+  state.poi3 = candidates3.length
+    ? pick(candidates3)
+    : fallback3.length
+      ? pick(fallback3)
+      : generateFictionalPOI(state.lat, state.lng, state.poi2);
+
   state.isDemo = demo;
-  console.log(`[Mission] poi1="${state.poi1.tags.name}" (${getQuadrant(state.poi1)}) | poi2="${state.poi2.tags.name}" (${state.poi2._fictional ? 'fictif' : getQuadrant(state.poi2)})`);
+  console.log(`[Mission] poi1="${state.poi1.tags.name}" | poi2="${state.poi2.tags.name}" | poi3="${state.poi3.tags.name}"`);
 
   hideLoading();
   if (demo) {
@@ -1385,7 +1413,7 @@ function startMission() {
      - move 3+ (retour)  → adresse de départ si useStartAddress
   */
   const moveSteps = MISSION.steps.filter(s => s.type === 'move');
-  const poiByMoveIndex = [state.poi1, state.poi2, state.poi2]; // 0→poi1, 1→poi2, 2→poi2
+  const poiByMoveIndex = [state.poi1, state.poi2, state.poi3]; // 0→poi1, 1→poi2, 2→poi3
 
   moveSteps.forEach((step, mi) => {
     if (step.useStartAddress) {
@@ -1663,8 +1691,9 @@ function completeMission() {
   const TORTUOSITY = 1.4;
   const seg1 = state.poi1 ? haversine(state.lat, state.lng, state.poi1.lat, state.poi1.lon) : 0;
   const seg2 = (state.poi1 && state.poi2) ? haversine(state.poi1.lat, state.poi1.lon, state.poi2.lat, state.poi2.lon) : 0;
-  const seg3 = state.poi2 ? haversine(state.poi2.lat, state.poi2.lon, state.lat, state.lng) : 0;
-  const totalM = Math.round((seg1 + seg2 + seg3) * TORTUOSITY);
+  const seg3 = (state.poi2 && state.poi3) ? haversine(state.poi2.lat, state.poi2.lon, state.poi3.lat, state.poi3.lon) : 0;
+  const seg4 = state.poi3 ? haversine(state.poi3.lat, state.poi3.lon, state.lat, state.lng) : 0;
+  const totalM = Math.round((seg1 + seg2 + seg3 + seg4) * TORTUOSITY);
 
   document.getElementById('end-time').textContent = elapsed || '<1';
   document.getElementById('end-dist').textContent = totalM >= 1000
@@ -1687,7 +1716,7 @@ function completeMission() {
 function resetMission() {
   document.querySelectorAll('audio').forEach(a=>{ a.pause(); a.currentTime=0; });
   window.speechSynthesis?.cancel();
-  Object.assign(state, {address:'',lat:null,lng:null,poi1:null,poi2:null,startTime:null,isDemo:false});
+  Object.assign(state, {address:'',lat:null,lng:null,poi1:null,poi2:null,poi3:null,startTime:null,isDemo:false});
   document.getElementById('address-input').value = '';
   document.getElementById('address-suggestions').innerHTML = '';
   document.getElementById('demo-badge').classList.remove('show');
