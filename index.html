@@ -1267,78 +1267,83 @@ async function fetchAndPrepareMission() {
     const globalTimeout = new Promise((_, reject) =>
       setTimeout(() => reject(new Error('Timeout 15s')), 15000)
     );
-    const search = fetchPOIs(state.lat, state.lng, 0, 1800);
-    allPOIs = await Promise.race([search, globalTimeout]);
-    console.log(`[Mission] ${allPOIs.length} POIs bruts récupérés`);
+    allPOIs = await Promise.race([fetchPOIs(state.lat, state.lng, 0, 1800), globalTimeout]);
+    console.log(`[Mission] ${allPOIs.length} POIs bruts`);
   } catch(e) {
-    console.warn('[Mission] Recherche échouée:', e.message);
+    console.warn('[Mission] Echec réseau:', e.message);
     demo = true;
   }
 
-  // ── Dédoublonnage : par nom ET par coordonnées (50m de tolérance) ──
-  const rawPool = demo ? demoPOIs(state.lat, state.lng, 0, 9999) : allPOIs;
-  const seenNames = new Set();
-  const unique = rawPool.filter(p => {
-    if (!p.tags?.name) return false;
-    // Clé coordonnée arrondie à ~55m
-    const coordKey = `${p.lat.toFixed(3)},${p.lon.toFixed(3)}`;
-    const nameKey  = p.tags.name.toLowerCase().trim();
-    if (seenNames.has(coordKey) || seenNames.has(nameKey)) return false;
-    seenNames.add(coordKey);
-    seenNames.add(nameKey);
+  const pool = demo ? demoPOIs(state.lat, state.lng, 0, 9999) : allPOIs;
+
+  // ── Quadrants autour du départ ──────────────────────────────
+  // On divise la boussole en 4 quadrants (NE, NW, SE, SW)
+  // poi1 et poi2 seront TOUJOURS dans des quadrants opposés
+  function getQuadrant(p) {
+    const dLat = p.lat - state.lat;
+    const dLon = p.lon - state.lng;
+    if (dLat >= 0 && dLon >= 0) return 'NE';
+    if (dLat >= 0 && dLon <  0) return 'NW';
+    if (dLat <  0 && dLon >= 0) return 'SE';
+    return 'SW';
+  }
+
+  const OPPOSITES = { NE: 'SW', SW: 'NE', NW: 'SE', SE: 'NW' };
+
+  // Dédoublonnage par coordonnées (~55m)
+  const seen = new Set();
+  const unique = pool.filter(p => {
+    if (!p.tags?.name || p.lat == null) return false;
+    const key = `${p.lat.toFixed(3)},${p.lon.toFixed(3)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
     return true;
+  }).filter(p => {
+    const d = haversine(state.lat, state.lng, p.lat, p.lon);
+    return d >= 300 && d <= 1500;
   });
 
-  console.log(`[Mission] ${unique.length} POIs uniques`);
+  console.log(`[Mission] ${unique.length} POIs uniques dans 300-1500m`);
 
-  if (!unique.length) {
-    demo = true;
-    // Génère deux points fictifs dans des directions opposées
-    const fakeA = generateFictionalPOI(state.lat, state.lng, { lat: state.lat + 0.01, lon: state.lng });
-    const fakeB = generateFictionalPOI(state.lat, state.lng, fakeA);
-    state.poi1 = fakeA;
-    state.poi2 = fakeB;
-  } else {
-    // ── POI 1 : le plus proche dans 300-1000m ──────────────────
-    const candidates1 = unique
-      .map(p => ({ p, d: haversine(state.lat, state.lng, p.lat, p.lon) }))
-      .filter(({ d }) => d >= 300 && d <= 1000)
-      .sort((a, b) => a.d - b.d);
+  // ── Sélection poi1 — quadrant aléatoire ────────────────────
+  // Choisit un quadrant de départ au hasard parmi ceux qui ont des POIs
+  const byQuadrant = { NE: [], NW: [], SE: [], SW: [] };
+  unique.forEach(p => byQuadrant[getQuadrant(p)].push(p));
 
-    // Si rien dans ce rayon, prend le plus proche disponible
-    const pool1 = candidates1.length
-      ? candidates1
-      : unique.map(p => ({ p, d: haversine(state.lat, state.lng, p.lat, p.lon) }))
-              .sort((a, b) => a.d - b.d);
+  const quadrantsWithPOIs = Object.entries(byQuadrant)
+    .filter(([, pois]) => pois.length > 0)
+    .map(([q]) => q);
 
-    // Tire aléatoirement parmi les 3 premiers (variété sans trop s'éloigner)
-    state.poi1 = pool1[Math.floor(Math.random() * Math.min(3, pool1.length))].p;
-
-    // ── POI 2 : différent de poi1, dans un secteur différent ───
-    const poi1Lat = state.poi1.lat, poi1Lon = state.poi1.lon;
-
-    const candidates2 = unique
-      .filter(p => {
-        const dFromStart = haversine(state.lat, state.lng, p.lat, p.lon);
-        const dFromPoi1  = haversine(poi1Lat, poi1Lon, p.lat, p.lon);
-        // Distinct = pas le même endroit physiquement (>300m de poi1)
-        // ET dans une fourchette raisonnable depuis le départ
-        return dFromPoi1 > 300 && dFromStart >= 400 && dFromStart <= 1500;
-      })
-      .map(p => ({ p, d: haversine(state.lat, state.lng, p.lat, p.lon) }))
-      .sort((a, b) => a.d - b.d);
-
-    if (candidates2.length) {
-      state.poi2 = candidates2[Math.floor(Math.random() * Math.min(3, candidates2.length))].p;
+  let q1, q2;
+  if (quadrantsWithPOIs.length >= 2) {
+    // Préfère des quadrants opposés si possible
+    const pairs = [['NE','SW'],['NW','SE']];
+    const validPair = pairs.find(([a, b]) =>
+      byQuadrant[a].length > 0 && byQuadrant[b].length > 0
+    );
+    if (validPair) {
+      [q1, q2] = validPair;
     } else {
-      // Aucun candidat valide → point fictif dans la zone
-      console.log('[Mission] Pas de poi2 distinct, génération fictive');
-      state.poi2 = generateFictionalPOI(state.lat, state.lng, state.poi1);
+      // Prend deux quadrants différents quelconques
+      q1 = quadrantsWithPOIs[0];
+      q2 = quadrantsWithPOIs.find(q => q !== q1) || q1;
     }
+    state.poi1 = pick(byQuadrant[q1]);
+    state.poi2 = pick(byQuadrant[q2]);
+  } else if (quadrantsWithPOIs.length === 1) {
+    // Un seul quadrant avec POIs — poi1 réel, poi2 fictif dans le quadrant opposé
+    q1 = quadrantsWithPOIs[0];
+    state.poi1 = pick(byQuadrant[q1]);
+    state.poi2 = generateFictionalPOI(state.lat, state.lng, state.poi1);
+  } else {
+    // Aucun POI — deux points fictifs dans des directions opposées
+    state.poi1 = generateFictionalPOI(state.lat, state.lng,
+      { lat: state.lat + 0.005, lon: state.lng + 0.005 });
+    state.poi2 = generateFictionalPOI(state.lat, state.lng, state.poi1);
   }
 
   state.isDemo = demo;
-  console.log(`[Mission] poi1="${state.poi1.tags.name}" poi2="${state.poi2.tags.name}"`);
+  console.log(`[Mission] poi1="${state.poi1.tags.name}" (${getQuadrant(state.poi1)}) | poi2="${state.poi2.tags.name}" (${state.poi2._fictional ? 'fictif' : getQuadrant(state.poi2)})`);
 
   hideLoading();
   if (demo) {
