@@ -1062,102 +1062,104 @@ const POI_QUERIES = [
 
 /* Cherche des POIs via Nominatim autour d'un point */
 async function fetchPOIsNominatim(lat, lng, radiusM) {
-  // Nominatim viewbox : on crée un carré autour du point
-  const deg = radiusM / 111000; // ~111km par degré
-  const viewbox = `${lng - deg},${lat - deg},${lng + deg},${lat + deg}`;
+  const deg = (radiusM * 1.5) / 111000; // viewbox généreux
+  const viewbox = `${lng-deg},${lat-deg},${lng+deg},${lat+deg}`;
 
-  // On lance une recherche par type en parallèle, on prend les premiers résultats
-  const requests = POI_QUERIES.map(type =>
-    fetch(
-      `https://nominatim.openstreetmap.org/search?format=json&limit=5` +
-      `&q=${encodeURIComponent(type)}&viewbox=${viewbox}&bounded=1`,
-      { headers: { 'Accept-Language': 'fr' } }
-    ).then(r => r.json()).catch(() => [])
+  // Timeout global sur l'ensemble des requêtes parallèles : 8s max
+  const timeoutPromise = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error('Nominatim timeout')), 8000)
   );
 
-  const results = await Promise.all(requests);
+  const searchPromise = Promise.all(
+    POI_QUERIES.map(type =>
+      fetch(
+        `https://nominatim.openstreetmap.org/search?format=json&limit=8` +
+        `&q=${encodeURIComponent(type)}&viewbox=${viewbox}&bounded=1`,
+        { headers: { 'Accept-Language': 'fr' } }
+      ).then(r => r.ok ? r.json() : []).catch(() => [])
+    )
+  );
+
+  const results = await Promise.race([searchPromise, timeoutPromise]);
   const flat = results.flat();
 
-  // Dédoublonne par osm_id, filtre par distance réelle, transforme au format POI
   const seen = new Set();
-  return flat
+  const pois = flat
     .filter(r => {
       if (!r.display_name || seen.has(r.osm_id)) return false;
       seen.add(r.osm_id);
-      const d = haversine(lat, lng, +r.lat, +r.lon);
-      return d >= 200 && d <= radiusM;
+      return true;
     })
     .map(r => ({
       tags: { name: r.display_name.split(',')[0].trim() },
-      lat:  +r.lat,
-      lon:  +r.lon,
+      lat: +r.lat, lon: +r.lon,
       _source: 'nominatim'
-    }));
+    }))
+    // Filtre par distance — large : entre 100m et radiusM * 1.5
+    .filter(p => {
+      const d = haversine(lat, lng, p.lat, p.lon);
+      return d >= 100 && d <= radiusM * 1.5;
+    });
+
+  return pois;
 }
 
-/* Overpass en fallback — requête très légère */
-const OVERPASS_ENDPOINTS = [
-  (q) => `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(q)}`,
-  (q) => `https://overpass.kumi.systems/api/interpreter?data=${encodeURIComponent(q)}`,
-  (q) => `https://corsproxy.io/?${encodeURIComponent('https://overpass-api.de/api/interpreter?data=' + encodeURIComponent(q))}`,
-];
-
 async function fetchPOIsOverpass(lat, lng, rMax) {
-  const q = `[out:json][timeout:20];(node["leisure"="park"](around:${rMax},${lat},${lng});node["place"="square"](around:${rMax},${lat},${lng});node["amenity"="townhall"](around:${rMax},${lat},${lng});node["tourism"="attraction"](around:${rMax},${lat},${lng}););out 30;`;
+  const q = `[out:json][timeout:15];(node["leisure"="park"](around:${rMax},${lat},${lng});node["place"="square"](around:${rMax},${lat},${lng});node["amenity"="townhall"](around:${rMax},${lat},${lng});node["tourism"="attraction"](around:${rMax},${lat},${lng}););out 30;`;
   for (let i = 0; i < OVERPASS_ENDPOINTS.length; i++) {
     try {
       const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 15000);
+      const timer = setTimeout(() => ctrl.abort(), 12000);
       let res;
       try { res = await fetch(OVERPASS_ENDPOINTS[i](q), { signal: ctrl.signal }); }
       finally { clearTimeout(timer); }
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const data = await res.json();
-      const elements = data.elements || [];
-      if (elements.length > 0) {
-        console.log(`[Overpass] endpoint ${i+1} → ${elements.length} résultats`);
-        return elements
-          .map(e => ({ ...e, lat: e.lat ?? e.center?.lat, lon: e.lon ?? e.center?.lon }))
-          .filter(e => e.tags?.name && e.lat != null);
-      }
-    } catch(e) { console.warn(`[Overpass] endpoint ${i+1} échoué:`, e.message); }
+      const elements = (data.elements || [])
+        .map(e => ({ ...e, lat: e.lat ?? e.center?.lat, lon: e.lon ?? e.center?.lon }))
+        .filter(e => e.tags?.name && e.lat != null);
+      if (elements.length > 0) return elements;
+    } catch(e) { console.warn(`[Overpass] endpoint ${i+1}:`, e.message); }
   }
   return [];
 }
 
-/* Fonction principale — Nominatim d'abord, Overpass en fallback */
 async function fetchPOIs(lat, lng, rMin, rMax) {
   showLoading('Recherche des points d\'intérêt…');
+  console.log(`[fetchPOIs] lat=${lat} lng=${lng} rMin=${rMin} rMax=${rMax}`);
 
-  // 1. Tentative Nominatim
+  // ── 1. Nominatim ───────────────────────────────────────────
   try {
     const pois = await fetchPOIsNominatim(lat, lng, rMax);
-    const filtered = pois.filter(p => {
-      const d = haversine(lat, lng, p.lat, p.lon);
-      return d >= rMin && d <= rMax;
-    });
-    if (filtered.length > 0) {
-      console.log(`[Nominatim] ${filtered.length} POIs trouvés`);
-      return filtered;
+    console.log(`[Nominatim] ${pois.length} POIs dans le rayon élargi`);
+    if (pois.length > 0) {
+      // Tri par distance, on prend ceux dans rMin–rMax en priorité
+      // mais si aucun, on relaxe rMin à 0 pour ne pas bloquer
+      const strict = pois.filter(p => {
+        const d = haversine(lat, lng, p.lat, p.lon);
+        return d >= rMin && d <= rMax;
+      });
+      const relaxed = strict.length > 0 ? strict : pois;
+      console.log(`[Nominatim] ${strict.length} strict / ${relaxed.length} relaxed`);
+      return relaxed;
     }
-    console.log('[Nominatim] Aucun résultat, tentative Overpass...');
   } catch(e) {
-    console.warn('[Nominatim] Erreur:', e.message);
+    console.warn('[Nominatim]', e.message);
   }
 
-  // 2. Fallback Overpass
+  // ── 2. Overpass fallback ────────────────────────────────────
   showLoading('Recherche alternative…');
-  const overpassPois = await fetchPOIsOverpass(lat, lng, rMax);
-  const filtered = overpassPois.filter(e => {
+  const oPois = await fetchPOIsOverpass(lat, lng, rMax);
+  const filtered = oPois.filter(e => {
     const d = haversine(lat, lng, e.lat, e.lon);
     return d >= rMin && d <= rMax;
   });
-  if (filtered.length > 0) {
-    console.log(`[Overpass] ${filtered.length} POIs trouvés`);
-    return filtered;
-  }
+  if (filtered.length > 0) return filtered;
 
-  throw new Error('Aucun POI trouvé (Nominatim + Overpass)');
+  // ── 3. Overpass sans filtre de distance min (zone peu dense) ─
+  if (oPois.length > 0) return oPois;
+
+  throw new Error('Aucun POI trouvé');
 }
 
 function demoPOIs(lat, lng, rMin, rMax) {
@@ -1169,25 +1171,65 @@ function pick(arr){ return arr[Math.floor(Math.random()*arr.length)]; }
 
 async function fetchAndPrepareMission() {
   showLoading('Recherche des points d\'intérêt…');
-  let pois1=[], pois2=[], demo=false;
-  try {
-    pois1 = await fetchPOIs(state.lat, state.lng, 400, 900);
-    if (!pois1.length) pois1 = await fetchPOIs(state.lat, state.lng, 200, 1500);
-    if (pois1.length) pois2 = await fetchPOIs(state.lat, state.lng, 800, 1800);
-  } catch(e) { demo=true; console.warn('Overpass KO, mode démo:', e.message); }
+  let pois1 = [], pois2 = [], demo = false;
 
-  if (!pois1.length) { demo=true; pois1 = demoPOIs(state.lat,state.lng,400,900); }
-  if (!pois2.length) { demo=true; pois2 = demoPOIs(state.lat,state.lng,800,1800); }
+  // Un seul appel Nominatim pour un grand rayon, on partitionne ensuite
+  // Évite de faire 3-4 appels réseau séquentiels qui bloqueraient ~40s
+  try {
+    // Timeout global sur toute la recherche : 15s max avant mode démo
+    const globalTimeout = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('Timeout global 15s')), 15000)
+    );
+
+    const searchAll = (async () => {
+      // Un seul fetch large (1800m), on filtre ensuite localement
+      const all = await fetchPOIs(state.lat, state.lng, 0, 1800);
+      console.log(`[Mission] ${all.length} POIs total dans 1800m`);
+
+      pois1 = all.filter(p => {
+        const d = haversine(state.lat, state.lng, p.lat, p.lon);
+        return d >= 400 && d <= 900;
+      });
+
+      // Si pas assez dans 400-900m, élargit à 200-1500m
+      if (pois1.length === 0) {
+        pois1 = all.filter(p => {
+          const d = haversine(state.lat, state.lng, p.lat, p.lon);
+          return d >= 200 && d <= 1500;
+        });
+      }
+
+      // POIs pour l'étape 2 : 800-1800m, différents de poi1
+      pois2 = all.filter(p => {
+        const d = haversine(state.lat, state.lng, p.lat, p.lon);
+        return d >= 800 && d <= 1800;
+      });
+
+      // Dernier recours : tous les POIs trouvés peu importe la distance
+      if (pois1.length === 0) pois1 = all;
+      if (pois2.length === 0) pois2 = all;
+    })();
+
+    await Promise.race([searchAll, globalTimeout]);
+
+  } catch(e) {
+    console.warn('[Mission] Recherche échouée, mode démo:', e.message);
+    demo = true;
+  }
+
+  // Fallback démo si toujours vide
+  if (!pois1.length) { demo = true; pois1 = demoPOIs(state.lat, state.lng, 0, 9999); }
+  if (!pois2.length) { demo = true; pois2 = demoPOIs(state.lat, state.lng, 0, 9999); }
 
   state.poi1 = pick(pois1);
-  pois2 = pois2.filter(p=>p.tags.name!==state.poi1.tags.name);
-  state.poi2 = pick(pois2)||state.poi1;
+  pois2 = pois2.filter(p => p.tags.name !== state.poi1.tags.name);
+  state.poi2 = pick(pois2) || state.poi1;
   state.isDemo = demo;
 
   hideLoading();
   if (demo) {
     document.getElementById('demo-badge').classList.add('show');
-    showToast('Mode démo', 'Overpass indisponible — POIs fictifs activés.', 4500);
+    showToast('Mode démo', 'Réseau indisponible — POIs fictifs activés.', 4500);
   }
   populateBriefing();
   goTo('screen-briefing');
