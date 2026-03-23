@@ -1246,76 +1246,79 @@ function generateFictionalPOI(lat, lng, excludePOI) {
 
 async function fetchAndPrepareMission() {
   showLoading('Recherche des points d\'intérêt…');
-  let pois1 = [], pois2 = [], demo = false;
+  let allPOIs = [], demo = false;
 
-  // Un seul appel Nominatim pour un grand rayon, on partitionne ensuite
-  // Évite de faire 3-4 appels réseau séquentiels qui bloqueraient ~40s
   try {
-    // Timeout global sur toute la recherche : 15s max avant mode démo
     const globalTimeout = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error('Timeout global 15s')), 15000)
+      setTimeout(() => reject(new Error('Timeout 15s')), 15000)
     );
-
-    const searchAll = (async () => {
-      // Un seul fetch large (1800m), on filtre ensuite localement
-      const all = await fetchPOIs(state.lat, state.lng, 0, 1800);
-      console.log(`[Mission] ${all.length} POIs total dans 1800m`);
-
-      pois1 = all.filter(p => {
-        const d = haversine(state.lat, state.lng, p.lat, p.lon);
-        return d >= 400 && d <= 900;
-      });
-
-      // Si pas assez dans 400-900m, élargit à 200-1500m
-      if (pois1.length === 0) {
-        pois1 = all.filter(p => {
-          const d = haversine(state.lat, state.lng, p.lat, p.lon);
-          return d >= 200 && d <= 1500;
-        });
-      }
-
-      // POIs pour l'étape 2 : 800-1800m, différents de poi1
-      pois2 = all.filter(p => {
-        const d = haversine(state.lat, state.lng, p.lat, p.lon);
-        return d >= 800 && d <= 1800;
-      });
-
-      // Dernier recours : tous les POIs trouvés peu importe la distance
-      if (pois1.length === 0) pois1 = all;
-      if (pois2.length === 0) pois2 = all;
-    })();
-
-    await Promise.race([searchAll, globalTimeout]);
-
+    const search = fetchPOIs(state.lat, state.lng, 0, 1800);
+    allPOIs = await Promise.race([search, globalTimeout]);
+    console.log(`[Mission] ${allPOIs.length} POIs bruts récupérés`);
   } catch(e) {
-    console.warn('[Mission] Recherche échouée, mode démo:', e.message);
+    console.warn('[Mission] Recherche échouée:', e.message);
     demo = true;
   }
 
-  // Fallback démo si toujours vide
-  if (!pois1.length) { demo = true; pois1 = demoPOIs(state.lat, state.lng, 0, 9999); }
-  if (!pois2.length) { demo = true; pois2 = demoPOIs(state.lat, state.lng, 0, 9999); }
+  // ── Dédoublonnage par nom (garde un seul exemplaire par nom) ──
+  const seen = new Set();
+  const unique = (demo ? demoPOIs(state.lat, state.lng, 0, 9999) : allPOIs)
+    .filter(p => {
+      if (!p.tags?.name || seen.has(p.tags.name)) return false;
+      seen.add(p.tags.name);
+      return true;
+    });
 
-  // ── Sélection poi1 ───────────────────────────────────────────
-  state.poi1 = pick(pois1);
-  const poi1Lat = state.poi1.lat, poi1Lon = state.poi1.lon;
+  console.log(`[Mission] ${unique.length} POIs uniques`);
 
-  // ── Sélection poi2 : doit être différent de poi1 ─────────────
-  // Filtre strict : nom différent ET au moins 200m d'écart physique
-  const isDistinct = (p) =>
-    p.tags.name !== state.poi1.tags.name &&
-    haversine(poi1Lat, poi1Lon, p.lat, p.lon) > 200;
+  if (!unique.length) {
+    demo = true;
+    // Génère deux points fictifs dans des directions opposées
+    const fakeA = generateFictionalPOI(state.lat, state.lng, { lat: state.lat + 0.01, lon: state.lng });
+    const fakeB = generateFictionalPOI(state.lat, state.lng, fakeA);
+    state.poi1 = fakeA;
+    state.poi2 = fakeB;
+  } else {
+    // ── POI 1 : le plus proche dans 300-1000m ──────────────────
+    const candidates1 = unique
+      .map(p => ({ p, d: haversine(state.lat, state.lng, p.lat, p.lon) }))
+      .filter(({ d }) => d >= 300 && d <= 1000)
+      .sort((a, b) => a.d - b.d);
 
-  let pool2 = pois2.filter(isDistinct);
+    // Si rien dans ce rayon, prend le plus proche disponible
+    const pool1 = candidates1.length
+      ? candidates1
+      : unique.map(p => ({ p, d: haversine(state.lat, state.lng, p.lat, p.lon) }))
+              .sort((a, b) => a.d - b.d);
 
-  // Si pool vide, élargit à tous les POIs connus
-  if (!pool2.length) pool2 = [...pois1, ...pois2].filter(isDistinct);
+    // Tire aléatoirement parmi les 3 premiers (variété sans trop s'éloigner)
+    state.poi1 = pool1[Math.floor(Math.random() * Math.min(3, pool1.length))].p;
 
-  // Dernier recours : point fictif dans la zone (jamais Paris)
-  state.poi2 = pool2.length
-    ? pick(pool2)
-    : generateFictionalPOI(state.lat, state.lng, state.poi1);
+    // ── POI 2 : différent de poi1, dans un secteur différent ───
+    const poi1Lat = state.poi1.lat, poi1Lon = state.poi1.lon;
+
+    const candidates2 = unique
+      .filter(p => {
+        if (p.tags.name === state.poi1.tags.name) return false;
+        const dFromStart = haversine(state.lat, state.lng, p.lat, p.lon);
+        const dFromPoi1  = haversine(poi1Lat, poi1Lon, p.lat, p.lon);
+        // Doit être à plus de 300m de poi1 ET entre 400-1500m du départ
+        return dFromPoi1 > 300 && dFromStart >= 400 && dFromStart <= 1500;
+      })
+      .map(p => ({ p, d: haversine(state.lat, state.lng, p.lat, p.lon) }))
+      .sort((a, b) => a.d - b.d);
+
+    if (candidates2.length) {
+      state.poi2 = candidates2[Math.floor(Math.random() * Math.min(3, candidates2.length))].p;
+    } else {
+      // Aucun candidat valide → point fictif dans la zone
+      console.log('[Mission] Pas de poi2 distinct, génération fictive');
+      state.poi2 = generateFictionalPOI(state.lat, state.lng, state.poi1);
+    }
+  }
+
   state.isDemo = demo;
+  console.log(`[Mission] poi1="${state.poi1.tags.name}" poi2="${state.poi2.tags.name}"`);
 
   hideLoading();
   if (demo) {
@@ -1628,12 +1631,13 @@ async function newPOI() {
 function completeMission() {
   const elapsed = Math.round((Date.now() - (state.startTime||Date.now())) / 60000);
 
-  // Haversine = vol d'oiseau. Coefficient 1.4 = tortuosité moyenne en ville
-  // (ratio validé empiriquement : distance réelle ÷ ligne droite ≈ 1.3–1.5)
+  // Distance réelle estimée = trajet complet départ→poi1→poi2→départ
+  // × 1.4 (tortuosité urbaine : les rues ne sont jamais en ligne droite)
   const TORTUOSITY = 1.4;
-  const d1 = state.poi1 ? Math.round(haversine(state.lat,state.lng,state.poi1.lat,state.poi1.lon) * TORTUOSITY) : 0;
-  const d2 = state.poi2 ? Math.round(haversine(state.lat,state.lng,state.poi2.lat,state.poi2.lon) * TORTUOSITY) : 0;
-  const totalM = d1 + d2;
+  const seg1 = state.poi1 ? haversine(state.lat, state.lng, state.poi1.lat, state.poi1.lon) : 0;
+  const seg2 = (state.poi1 && state.poi2) ? haversine(state.poi1.lat, state.poi1.lon, state.poi2.lat, state.poi2.lon) : 0;
+  const seg3 = state.poi2 ? haversine(state.poi2.lat, state.poi2.lon, state.lat, state.lng) : 0;
+  const totalM = Math.round((seg1 + seg2 + seg3) * TORTUOSITY);
 
   document.getElementById('end-time').textContent = elapsed || '<1';
   document.getElementById('end-dist').textContent = totalM >= 1000
