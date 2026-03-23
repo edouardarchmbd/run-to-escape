@@ -1296,26 +1296,25 @@ async function fetchAndPrepareMission() {
   if (!pois1.length) { demo = true; pois1 = demoPOIs(state.lat, state.lng, 0, 9999); }
   if (!pois2.length) { demo = true; pois2 = demoPOIs(state.lat, state.lng, 0, 9999); }
 
-  // Choisit poi1
+  // ── Sélection poi1 ───────────────────────────────────────────
   state.poi1 = pick(pois1);
-
-  // Exclut poi1 de la liste poi2 — comparaison sur nom ET distance
   const poi1Lat = state.poi1.lat, poi1Lon = state.poi1.lon;
-  pois2 = pois2.filter(p =>
+
+  // ── Sélection poi2 : doit être différent de poi1 ─────────────
+  // Filtre strict : nom différent ET au moins 200m d'écart physique
+  const isDistinct = (p) =>
     p.tags.name !== state.poi1.tags.name &&
-    haversine(poi1Lat, poi1Lon, p.lat, p.lon) > 150 // au moins 150m d'écart
-  );
+    haversine(poi1Lat, poi1Lon, p.lat, p.lon) > 200;
 
-  // Si plus rien dans pois2, on génère un point fictif dans la zone
-  if (!pois2.length) {
-    const allPois = [...pois1].filter(p =>
-      p.tags.name !== state.poi1.tags.name &&
-      haversine(poi1Lat, poi1Lon, p.lat, p.lon) > 150
-    );
-    pois2 = allPois.length ? allPois : [generateFictionalPOI(state.lat, state.lng, state.poi1)];
-  }
+  let pool2 = pois2.filter(isDistinct);
 
-  state.poi2 = pick(pois2) || generateFictionalPOI(state.lat, state.lng, state.poi1);
+  // Si pool vide, élargit à tous les POIs connus
+  if (!pool2.length) pool2 = [...pois1, ...pois2].filter(isDistinct);
+
+  // Dernier recours : point fictif dans la zone (jamais Paris)
+  state.poi2 = pool2.length
+    ? pick(pool2)
+    : generateFictionalPOI(state.lat, state.lng, state.poi1);
   state.isDemo = demo;
 
   hideLoading();
@@ -1627,13 +1626,27 @@ async function newPOI() {
    FIN DE MISSION
    ============================================================ */
 function completeMission() {
-  const elapsed  = Math.round((Date.now() - (state.startTime||Date.now())) / 60000);
-  const d1 = state.poi1 ? Math.round(haversine(state.lat,state.lng,state.poi1.lat,state.poi1.lon)) : 0;
-  const d2 = state.poi2 ? Math.round(haversine(state.lat,state.lng,state.poi2.lat,state.poi2.lon)) : 0;
+  const elapsed = Math.round((Date.now() - (state.startTime||Date.now())) / 60000);
+
+  // Haversine = vol d'oiseau. Coefficient 1.4 = tortuosité moyenne en ville
+  // (ratio validé empiriquement : distance réelle ÷ ligne droite ≈ 1.3–1.5)
+  const TORTUOSITY = 1.4;
+  const d1 = state.poi1 ? Math.round(haversine(state.lat,state.lng,state.poi1.lat,state.poi1.lon) * TORTUOSITY) : 0;
+  const d2 = state.poi2 ? Math.round(haversine(state.lat,state.lng,state.poi2.lat,state.poi2.lon) * TORTUOSITY) : 0;
+  const totalM = d1 + d2;
+
   document.getElementById('end-time').textContent = elapsed || '<1';
-  document.getElementById('end-dist').textContent = d1 + d2 || '—';
+  document.getElementById('end-dist').textContent = totalM >= 1000
+    ? (totalM / 1000).toFixed(1) + ' km'
+    : totalM + ' m';
   document.getElementById('end-poi').textContent  = MISSION.name || 'Mission accomplie';
   document.getElementById('end-timestamp').textContent = 'OP-COMPLETED: ' + new Date().toLocaleTimeString('fr-FR');
+
+  // Met aussi à jour le label de l'unité
+  const lbl = document.querySelector('#end-dist + .end-stat-lbl, .end-stat-lbl');
+  const distLbl = document.getElementById('end-dist')?.closest('.end-stat')?.querySelector('.end-stat-lbl');
+  if (distLbl) distLbl.textContent = 'Distance estimée';
+
   goTo('screen-end');
 }
 
