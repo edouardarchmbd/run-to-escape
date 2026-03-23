@@ -1378,20 +1378,22 @@ function populateBriefing() {
 function startMission() {
   state.startTime = Date.now();
 
-  /* Collect all POIs needed by move steps */
+  /* Assigne les POIs aux étapes Move :
+     - move 0 (course 1) → poi1
+     - move 1 (course 2) → poi2  (différent de poi1, quadrant opposé)
+     - move 2 (course 3) → poi2  (même destination, c'est le point d'exfil)
+     - move 3+ (retour)  → adresse de départ si useStartAddress
+  */
   const moveSteps = MISSION.steps.filter(s => s.type === 'move');
-  const pois = [state.poi1, state.poi2, state.poi1]; // fallback rotation
+  const poiByMoveIndex = [state.poi1, state.poi2, state.poi2]; // 0→poi1, 1→poi2, 2→poi2
 
   moveSteps.forEach((step, mi) => {
-    // If the step declares a fixed POI, use it; otherwise use auto-detected
-    if (!step.poi && mi < pois.length) {
-      step._resolvedPOI = pois[mi] || state.poi1;
-    } else {
-      step._resolvedPOI = step.poi || state.poi1;
-    }
-    // useStartAddress → override destination with start coords
     if (step.useStartAddress) {
       step._resolvedPOI = { tags: { name: 'Point de départ' }, lat: state.lat, lon: state.lng };
+    } else if (step.poi) {
+      step._resolvedPOI = step.poi; // POI fixe défini dans la mission
+    } else {
+      step._resolvedPOI = poiByMoveIndex[mi] || state.poi2;
     }
   });
 
