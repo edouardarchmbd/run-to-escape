@@ -1046,6 +1046,41 @@ async function confirmAddress() {
 }
 
 /* ============================================================
+   UTILITAIRES GÉO
+   ============================================================ */
+function haversine(lat1, lon1, lat2, lon2) {
+  const R = 6371000;
+  const dL = (lat2 - lat1) * Math.PI / 180;
+  const dl = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dL/2)**2 + Math.cos(lat1*Math.PI/180) * Math.cos(lat2*Math.PI/180) * Math.sin(dl/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+function mapsLink(lat, lon) {
+  return `https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}&travelmode=walking`;
+}
+
+function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+
+/* ============================================================
+   POIs DE DÉMONSTRATION — fallback hors-ligne
+   ============================================================ */
+const DEMO_POIS = [
+  { tags:{ name:'Fontaine du Châtelet' },    lat:48.8584, lon:2.3470 },
+  { tags:{ name:'Square de la République' }, lat:48.8635, lon:2.3634 },
+  { tags:{ name:'Passerelle des Arts' },     lat:48.8547, lon:2.3375 },
+  { tags:{ name:"Esplanade du Trocadéro" },  lat:48.8616, lon:2.2895 },
+  { tags:{ name:"Jardins du Palais-Royal" }, lat:48.8638, lon:2.3367 },
+  { tags:{ name:'Place de la Bastille' },    lat:48.8533, lon:2.3692 },
+  { tags:{ name:"Marché d'Aligre" },         lat:48.8500, lon:2.3747 },
+  { tags:{ name:'Buttes-Chaumont Nord' },    lat:48.8799, lon:2.3817 },
+  { tags:{ name:"Pont de Bir-Hakeim" },      lat:48.8539, lon:2.2887 },
+  { tags:{ name:'Mairie du 11e' },           lat:48.8596, lon:2.3798 },
+  { tags:{ name:'Square des Batignolles' },  lat:48.8851, lon:2.3211 },
+  { tags:{ name:'Parc Montsouris' },         lat:48.8228, lon:2.3369 },
+];
+
+/* ============================================================
    OVERPASS + FALLBACK DÉMO
    ============================================================ */
 /* ============================================================
@@ -1103,6 +1138,12 @@ async function fetchPOIsNominatim(lat, lng, radiusM) {
 
   return pois;
 }
+
+const OVERPASS_ENDPOINTS = [
+  (q) => `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(q)}`,
+  (q) => `https://overpass.kumi.systems/api/interpreter?data=${encodeURIComponent(q)}`,
+  (q) => `https://corsproxy.io/?${encodeURIComponent('https://overpass-api.de/api/interpreter?data=' + encodeURIComponent(q))}`,
+];
 
 async function fetchPOIsOverpass(lat, lng, rMax) {
   const q = `[out:json][timeout:15];(node["leisure"="park"](around:${rMax},${lat},${lng});node["place"="square"](around:${rMax},${lat},${lng});node["amenity"="townhall"](around:${rMax},${lat},${lng});node["tourism"="attraction"](around:${rMax},${lat},${lng}););out 30;`;
@@ -1167,7 +1208,6 @@ function demoPOIs(lat, lng, rMin, rMax) {
   if (!r.length) r = [...DEMO_POIS].sort((a,b) => haversine(lat,lng,a.lat,a.lon) - haversine(lat,lng,b.lat,b.lon));
   return r;
 }
-function pick(arr){ return arr[Math.floor(Math.random()*arr.length)]; }
 
 async function fetchAndPrepareMission() {
   showLoading('Recherche des points d\'intérêt…');
