@@ -1049,9 +1049,10 @@ async function confirmAddress() {
    OVERPASS + FALLBACK DÉMO
    ============================================================ */
 const OVERPASS_MIRRORS = [
-  'https://overpass-api.de/api/interpreter',
-  'https://overpass.kumi.systems/api/interpreter',
-  'https://maps.mail.ru/osm/tools/overpass/api/interpreter'
+  'https://overpass-api.de/api/interpreter',        // miroir principal (DE)
+  'https://overpass.kumi.systems/api/interpreter',  // miroir EU
+  'https://overpass.openstreetmap.ru/api/interpreter', // miroir RU
+  'https://maps.mail.ru/osm/tools/overpass/api/interpreter' // miroir backup
 ];
 
 const DEMO_POIS = [
@@ -1073,22 +1074,41 @@ function haversine(a,b,c,d){const R=6371000,dL=(c-a)*Math.PI/180,dl=(d-b)*Math.P
 function mapsLink(lat,lon){return `https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}&travelmode=walking`;}
 
 async function fetchPOIs(lat, lng, rMin, rMax) {
-  const q = `[out:json][timeout:20];(node["leisure"="park"](around:${rMax},${lat},${lng});node["place"="square"](around:${rMax},${lat},${lng});node["historic"="monument"](around:${rMax},${lat},${lng});node["railway"="station"](around:${rMax},${lat},${lng});node["amenity"="townhall"](around:${rMax},${lat},${lng});node["amenity"="library"](around:${rMax},${lat},${lng});node["tourism"="attraction"](around:${rMax},${lat},${lng});node["tourism"="museum"](around:${rMax},${lat},${lng});node["amenity"="theatre"](around:${rMax},${lat},${lng});way["leisure"="park"](around:${rMax},${lat},${lng}););out center;`;
-  for (const m of OVERPASS_MIRRORS) {
+  // Requête allégée : uniquement les types les plus courants + rayon unique
+  // [timeout:25] côté serveur Overpass, 22s côté client
+  const q = `[out:json][timeout:25];(node["leisure"="park"](around:${rMax},${lat},${lng});node["place"="square"](around:${rMax},${lat},${lng});node["amenity"="townhall"](around:${rMax},${lat},${lng});node["tourism"="attraction"](around:${rMax},${lat},${lng});node["railway"="station"](around:${rMax},${lat},${lng});node["historic"="monument"](around:${rMax},${lat},${lng}););out 40;`;
+
+  for (const mirror of OVERPASS_MIRRORS) {
     try {
       const ctrl = new AbortController();
-      const t = setTimeout(()=>ctrl.abort(), 11000);
+      const timer = setTimeout(() => ctrl.abort(), 22000); // 22s par miroir
       let res;
-      try { res = await fetch(`${m}?data=${encodeURIComponent(q)}`, {signal:ctrl.signal}); }
-      finally { clearTimeout(t); }
+      try {
+        res = await fetch(`${mirror}?data=${encodeURIComponent(q)}`, { signal: ctrl.signal });
+      } finally {
+        clearTimeout(timer);
+      }
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const data = await res.json();
-      return (data.elements||[])
-        .map(e=>({...e, lat:e.lat??e.center?.lat, lon:e.lon??e.center?.lon}))
-        .filter(e=>e.tags?.name && e.lat!=null && haversine(lat,lng,e.lat,e.lon)>=rMin && haversine(lat,lng,e.lat,e.lon)<=rMax);
-    } catch(e) { console.warn('[Overpass]', m, e.message); }
+
+      const results = (data.elements || [])
+        .map(e => ({ ...e, lat: e.lat ?? e.center?.lat, lon: e.lon ?? e.center?.lon }))
+        .filter(e => {
+          if (!e.tags?.name || e.lat == null) return false;
+          const d = haversine(lat, lng, e.lat, e.lon);
+          return d >= rMin && d <= rMax;
+        });
+
+      console.log(`[Overpass] ${mirror} → ${results.length} POIs`);
+      return results;
+
+    } catch (err) {
+      console.warn(`[Overpass] ${mirror} échoué : ${err.message}`);
+      // Informe l'utilisateur qu'on essaie le miroir suivant
+      showLoading(`Miroir indisponible, tentative suivante…`);
+    }
   }
-  throw new Error('Tous les miroirs Overpass inaccessibles');
+  throw new Error('Overpass inaccessible');
 }
 
 function demoPOIs(lat, lng, rMin, rMax) {
@@ -1099,7 +1119,7 @@ function demoPOIs(lat, lng, rMin, rMax) {
 function pick(arr){ return arr[Math.floor(Math.random()*arr.length)]; }
 
 async function fetchAndPrepareMission() {
-  showLoading('Analyse du terrain...');
+  showLoading('Recherche des points d\'intérêt…');
   let pois1=[], pois2=[], demo=false;
   try {
     pois1 = await fetchPOIs(state.lat, state.lng, 400, 900);
