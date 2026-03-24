@@ -501,15 +501,16 @@ html, body { height: 100%; background: var(--bg); color: var(--on-bg); font-fami
   </div>
 
   <div class="action-grid">
-    <!-- Carte GPS intégrée -->
-    <div id="map-container-1" style="display:none; height:240px; margin:0 0 8px; position:relative; border:1px solid rgba(141,166,190,0.15);">
-      <div id="map-1" style="width:100%; height:100%;"></div>
-      <button onclick="closeMap(1)" style="position:absolute; top:8px; right:8px; z-index:1000; background:rgba(10,10,10,0.85); border:none; color:#8da6be; width:28px; height:28px; cursor:pointer; font-size:16px; display:flex; align-items:center; justify-content:center;">✕</button>
+    <!-- Carte GPS inline (toujours visible) -->
+    <div style="margin:0 0 8px; position:relative;">
+      <div id="map-1" style="width:100%; height:180px; border:1px solid rgba(141,166,190,0.12);"></div>
+      <!-- Overlay tap pour ouvrir plein écran -->
+      <div onclick="openFullscreenMap(1)" style="position:absolute;inset:0;z-index:400;cursor:pointer;"></div>
+      <!-- Bouton plein écran -->
+      <button onclick="openFullscreenMap(1)" style="position:absolute;bottom:8px;right:8px;z-index:500;background:rgba(10,10,10,0.85);border:1px solid rgba(141,166,190,0.2);color:#8da6be;padding:5px 10px;cursor:pointer;font-size:10px;font-family:var(--font-body);letter-spacing:0.12em;text-transform:uppercase;display:flex;align-items:center;gap:6px;">
+        <span class="material-symbols-outlined" style="font-size:14px;">fullscreen</span>Plein écran
+      </button>
     </div>
-    <button class="btn btn-primary" id="map-btn-1" onclick="toggleMap(1)">
-      <span class="material-symbols-outlined">map</span>
-      Voir l'itinéraire
-    </button>
     <div class="action-row">
       <button class="btn btn-accent" onclick="next()">
         <span class="material-symbols-outlined" style="font-size:17px;">check_circle</span>
@@ -680,15 +681,14 @@ html, body { height: 100%; background: var(--bg); color: var(--on-bg); font-fami
   </div>
 
   <div class="action-grid">
-    <!-- Carte GPS intégrée -->
-    <div id="map-container-2" style="display:none; height:240px; margin:0 0 8px; position:relative; border:1px solid rgba(141,166,190,0.15);">
-      <div id="map-2" style="width:100%; height:100%;"></div>
-      <button onclick="closeMap(2)" style="position:absolute; top:8px; right:8px; z-index:1000; background:rgba(10,10,10,0.85); border:none; color:#8da6be; width:28px; height:28px; cursor:pointer; font-size:16px; display:flex; align-items:center; justify-content:center;">✕</button>
+    <!-- Carte GPS inline (toujours visible) -->
+    <div style="margin:0 0 8px; position:relative;">
+      <div id="map-2" style="width:100%; height:180px; border:1px solid rgba(141,166,190,0.12);"></div>
+      <div onclick="openFullscreenMap(2)" style="position:absolute;inset:0;z-index:400;cursor:pointer;"></div>
+      <button onclick="openFullscreenMap(2)" style="position:absolute;bottom:8px;right:8px;z-index:500;background:rgba(10,10,10,0.85);border:1px solid rgba(141,166,190,0.2);color:#8da6be;padding:5px 10px;cursor:pointer;font-size:10px;font-family:var(--font-body);letter-spacing:0.12em;text-transform:uppercase;display:flex;align-items:center;gap:6px;">
+        <span class="material-symbols-outlined" style="font-size:14px;">fullscreen</span>Plein écran
+      </button>
     </div>
-    <button class="btn btn-primary" id="map-btn-2" onclick="toggleMap(2)">
-      <span class="material-symbols-outlined">map</span>
-      Voir l'itinéraire
-    </button>
     <button class="btn btn-accent" onclick="next()">
       <span class="material-symbols-outlined" style="font-size:17px;">check_circle</span>
       Sur place — terminer
@@ -2017,11 +2017,14 @@ async function advanceMission() {
       if (lbl) lbl.textContent = step.audio.label || 'Incoming Intel';
       if (ttl) ttl.textContent = step.audio.title || 'Briefing';
 
-      // Autoplay — petit délai pour laisser l'écran s'afficher
+      // Autoplay audio
       setTimeout(() => {
         const el = document.getElementById(`audio-el-${audioIdx}`);
         if (el) playAudioEl(el);
       }, 600);
+
+      // Init carte GPS inline
+      initMapForMove(currentMoveNum);
     }
   }
 
@@ -2263,166 +2266,173 @@ async function completeMission() {
 /* ============================================================
    CARTE GPS INTÉGRÉE — Leaflet + GraphHopper
    ============================================================ */
-const GRAPHHOPPER_KEY = '2e736d2e-df01-483d-8bec-93f43a5fb0ee'; // ← remplacer par ta clé
+const GRAPHHOPPER_KEY = '2e736d2e-df01-483d-8bec-93f43a5fb0ee';
 
 const mapState = {
-  maps:    {},   // { 1: leafletMap, 2: leafletMap }
-  markers: {},   // position utilisateur
-  routes:  {},   // polylines du tracé
-  watchId: null, // geolocation watchPosition
-  userPos: null, // { lat, lng } position actuelle
+  maps:    {},
+  markers: {},
+  routes:  {},
+  watchId: null,
+  userPos: null,
+  fsMap:   null,  // carte plein écran
+  fsMoveIdx: null,
 };
 
-// Style sombre pour les tuiles OSM
 function getTileLayer() {
   return L.tileLayer(
     'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-    { attribution: '© CartoDB', maxZoom: 19 }
+    { attribution: '', maxZoom: 19 }
   );
 }
 
-async function toggleMap(idx) {
-  const container = document.getElementById(`map-container-${idx}`);
-  const btn       = document.getElementById(`map-btn-${idx}`);
-  if (!container) return;
-
-  const isVisible = container.style.display !== 'none';
-  if (isVisible) {
-    closeMap(idx);
-    return;
-  }
-
-  // Affiche le container
-  container.style.display = 'block';
-  btn.innerHTML = '<span class="material-symbols-outlined">close</span> Fermer la carte';
-
-  // Initialise la carte si pas encore fait
-  if (!mapState.maps[idx]) {
-    await initMap(idx);
-  } else {
-    // Re-centre sur la position actuelle
-    if (mapState.userPos) {
-      mapState.maps[idx].setView([mapState.userPos.lat, mapState.userPos.lng], 15);
-    }
-    setTimeout(() => mapState.maps[idx].invalidateSize(), 100);
-  }
-}
-
-function closeMap(idx) {
-  const container = document.getElementById(`map-container-${idx}`);
-  const btn       = document.getElementById(`map-btn-${idx}`);
-  if (container) container.style.display = 'none';
-  if (btn) btn.innerHTML = '<span class="material-symbols-outlined">map</span> Voir l’itinéraire';
-}
-
-async function initMap(idx) {
-  // POI cible selon l'index de la course
+// Appelé par advanceMission quand un screen-move s'affiche
+function initMapForMove(idx) {
+  if (!window.L) { console.warn('[MAP] Leaflet non chargé'); return; }
   const poi = idx === 1 ? state.poi1 : idx === 2 ? state.poi2 : state.poi3;
   if (!poi) return;
+  // Légère attente pour que le DOM soit rendu
+  setTimeout(() => _initMap(idx, poi), 200);
+}
 
-  // Centre initial = position utilisateur ou départ de mission
+async function _initMap(idx, poi) {
+  const el = document.getElementById(`map-${idx}`);
+  if (!el) return;
+
+  // Détruit l'ancienne carte si elle existe
+  if (mapState.maps[idx]) {
+    mapState.maps[idx].remove();
+    delete mapState.maps[idx];
+  }
+
   const startLat = mapState.userPos?.lat || state.lat;
   const startLng = mapState.userPos?.lng || state.lng;
 
   const map = L.map(`map-${idx}`, {
     center: [startLat, startLng],
     zoom: 15,
-    zoomControl: true,
+    zoomControl: false,
     attributionControl: false,
+    dragging: false,      // carte inline non draggable (ouvre fullscreen au tap)
+    scrollWheelZoom: false,
+    doubleClickZoom: false,
+    touchZoom: false,
   });
-
   getTileLayer().addTo(map);
   mapState.maps[idx] = map;
 
-  // Marqueur destination
-  const destIcon = L.divIcon({
-    className: '',
-    html: '<div style="width:14px;height:14px;background:#8da6be;border:2px solid #fff;border-radius:50%;"></div>',
-    iconSize: [14, 14], iconAnchor: [7, 7]
-  });
-  L.marker([poi.lat, poi.lon], { icon: destIcon })
-    .bindPopup(`<b>${poi.tags?.name || 'Destination'}</b>`)
-    .addTo(map);
-
-  // Marqueur utilisateur
-  const userIcon = L.divIcon({
-    className: '',
-    html: '<div style="width:16px;height:16px;background:#fff;border:3px solid #8da6be;border-radius:50%;box-shadow:0 0 0 4px rgba(141,166,190,0.2);"></div>',
-    iconSize: [16, 16], iconAnchor: [8, 8]
-  });
-  const userMarker = L.marker([startLat, startLng], { icon: userIcon }).addTo(map);
-  mapState.markers[idx] = userMarker;
-
-  // Trace la route GraphHopper
-  await drawRoute(idx, startLat, startLng, poi.lat, poi.lon);
-
-  // GPS en temps réel
-  startGPSWatch(idx);
-
-  setTimeout(() => map.invalidateSize(), 150);
+  _addMarkers(map, idx, startLat, startLng, poi);
+  await _drawRoute(map, idx, startLat, startLng, poi.lat, poi.lon);
+  startGPSWatch();
 }
 
-async function drawRoute(idx, fromLat, fromLng, toLat, toLng) {
-  const map = mapState.maps[idx];
-  if (!map) return;
+function _addMarkers(map, idx, userLat, userLng, poi) {
+  // Destination
+  const destIcon = L.divIcon({
+    className: '',
+    html: '<div style="width:12px;height:12px;background:#8da6be;border:2px solid #fff;border-radius:50%;"></div>',
+    iconSize: [12,12], iconAnchor: [6,6]
+  });
+  L.marker([poi.lat, poi.lon], { icon: destIcon }).addTo(map);
 
+  // Utilisateur
+  const userIcon = L.divIcon({
+    className: '',
+    html: '<div style="width:14px;height:14px;background:#fff;border:3px solid #8da6be;border-radius:50%;"></div>',
+    iconSize: [14,14], iconAnchor: [7,7]
+  });
+  const m = L.marker([userLat, userLng], { icon: userIcon }).addTo(map);
+  mapState.markers[idx] = m;
+}
+
+async function _drawRoute(map, idx, fromLat, fromLng, toLat, toLng) {
   try {
     const url = `https://graphhopper.com/api/1/route?point=${fromLat},${fromLng}&point=${toLat},${toLng}&vehicle=foot&locale=fr&key=${GRAPHHOPPER_KEY}&type=json&points_encoded=false`;
     const res = await fetch(url);
-    if (!res.ok) throw new Error('GraphHopper ' + res.status);
+    if (!res.ok) throw new Error('GH ' + res.status);
     const data = await res.json();
     const pts  = data.paths?.[0]?.points?.coordinates;
-    if (!pts?.length) throw new Error('Pas de tracé');
+    if (!pts?.length) throw new Error('no path');
 
-    // Supprime ancien tracé
     if (mapState.routes[idx]) map.removeLayer(mapState.routes[idx]);
-
-    // Tracé principal
-    const latlngs = pts.map(c => [c[1], c[0]]);
-    const route   = L.polyline(latlngs, {
-      color: '#8da6be', weight: 4, opacity: 0.9, lineCap: 'round', lineJoin: 'round'
-    }).addTo(map);
+    const lls = pts.map(c => [c[1], c[0]]);
+    // Halo
+    L.polyline(lls, { color:'#8da6be', weight:10, opacity:0.12 }).addTo(map);
+    // Tracé
+    const route = L.polyline(lls, { color:'#8da6be', weight:3.5, opacity:0.9, lineCap:'round' }).addTo(map);
     mapState.routes[idx] = route;
+    map.fitBounds(route.getBounds(), { padding:[16,16] });
 
-    // Halo sous le tracé
-    L.polyline(latlngs, { color: '#8da6be', weight: 12, opacity: 0.1 }).addTo(map);
-
-    // Zoom sur le tracé complet
-    map.fitBounds(route.getBounds(), { padding: [24, 24] });
-
-    // Distance du tracé
+    // Distance pour le plein écran
     const distM = data.paths[0].distance;
-    const distTxt = distM >= 1000
-      ? (distM/1000).toFixed(1) + ' km'
-      : Math.round(distM) + ' m';
+    const distTxt = distM >= 1000 ? (distM/1000).toFixed(1)+' km' : Math.round(distM)+' m';
     const timeMin = Math.round(data.paths[0].time / 60000);
-    console.log(`[MAP] Tracé GraphHopper: ${distTxt}, ~${timeMin} min`);
-
+    mapState[`dist${idx}`] = `${distTxt} · ~${timeMin} min à pied`;
+    console.log(`[MAP] Route idx=${idx}: ${distTxt}`);
   } catch(e) {
-    console.warn('[MAP] GraphHopper KO, tracé ligne droite:', e.message);
-    // Fallback : ligne droite
-    const fromPt = mapState.userPos
-      ? [mapState.userPos.lat, mapState.userPos.lng]
-      : [state.lat, state.lng];
+    console.warn('[MAP] GraphHopper KO:', e.message);
+    const fromPt = [fromLat, fromLng];
     L.polyline([fromPt, [toLat, toLng]], {
-      color: '#8da6be', weight: 3, opacity: 0.6, dashArray: '8 6'
-    }).addTo(mapState.maps[idx]);
+      color:'#8da6be', weight:2, opacity:0.5, dashArray:'6 5'
+    }).addTo(map);
   }
 }
 
-function startGPSWatch(idx) {
-  if (mapState.watchId !== null) return; // déjà actif
-  if (!navigator.geolocation) return;
+/* ── Plein écran ─────────────────────────────────────────── */
+function openFullscreenMap(idx) {
+  const modal = document.getElementById('map-fullscreen');
+  if (!modal) return;
+  modal.style.display = 'flex';
+  mapState.fsMoveIdx = idx;
 
+  const poi = idx === 1 ? state.poi1 : idx === 2 ? state.poi2 : state.poi3;
+  if (poi) {
+    document.getElementById('fs-poi-name').textContent = poi.tags?.name || 'Destination';
+  }
+  const distEl = document.getElementById('fs-distance');
+  if (distEl) distEl.textContent = mapState[`dist${idx}`] || 'Calcul en cours...';
+
+  // Init carte plein écran
+  setTimeout(async () => {
+    if (mapState.fsMap) { mapState.fsMap.remove(); mapState.fsMap = null; }
+    const startLat = mapState.userPos?.lat || state.lat;
+    const startLng = mapState.userPos?.lng || state.lng;
+    const fsMap = L.map('map-fs', {
+      center: [startLat, startLng],
+      zoom: 15,
+      zoomControl: true,
+      attributionControl: false,
+    });
+    getTileLayer().addTo(fsMap);
+    mapState.fsMap = fsMap;
+    if (poi) {
+      _addMarkers(fsMap, 'fs', startLat, startLng, poi);
+      mapState.markers['fs'] = mapState.markers['fs'];
+      await _drawRoute(fsMap, 'fs', startLat, startLng, poi.lat, poi.lon);
+    }
+    fsMap.invalidateSize();
+  }, 150);
+}
+
+function closeFullscreenMap() {
+  const modal = document.getElementById('map-fullscreen');
+  if (modal) modal.style.display = 'none';
+  if (mapState.fsMap) { mapState.fsMap.remove(); mapState.fsMap = null; }
+}
+
+function confirmArrivalFromMap() {
+  closeFullscreenMap();
+  next(); // avance la mission
+}
+
+/* ── GPS watch ───────────────────────────────────────────── */
+function startGPSWatch() {
+  if (mapState.watchId !== null || !navigator.geolocation) return;
   mapState.watchId = navigator.geolocation.watchPosition(
     (pos) => {
-      const lat = pos.coords.latitude;
-      const lng = pos.coords.longitude;
+      const lat = pos.coords.latitude, lng = pos.coords.longitude;
       mapState.userPos = { lat, lng };
-
-      // Met à jour tous les marqueurs actifs
-      Object.entries(mapState.markers).forEach(([i, marker]) => {
-        marker.setLatLng([lat, lng]);
+      [1, 2, 'fs'].forEach(i => {
+        if (mapState.markers[i]) mapState.markers[i].setLatLng([lat, lng]);
       });
     },
     (e) => console.warn('[GPS]', e.message),
@@ -2596,5 +2606,42 @@ function resetMission() {
 </style>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+
+<!-- ── Carte plein écran ──────────────────────────────────── -->
+<div id="map-fullscreen" style="
+  display:none; position:fixed; inset:0; z-index:600;
+  background:#0a0a0a; flex-direction:column;">
+
+  <!-- Header -->
+  <div style="display:flex; justify-content:space-between; align-items:center;
+              padding:12px 16px; background:rgba(10,10,10,0.95);
+              border-bottom:1px solid rgba(141,166,190,0.1); flex-shrink:0;">
+    <div>
+      <div style="font-size:0.58rem; color:var(--muted); letter-spacing:0.2em; text-transform:uppercase;">Itinéraire</div>
+      <div id="fs-poi-name" style="font-family:var(--font-head); font-size:1rem; font-weight:800; color:var(--primary); letter-spacing:-0.01em;">Destination</div>
+    </div>
+    <button onclick="closeFullscreenMap()" style="background:none; border:none; color:var(--muted); width:32px; height:32px; cursor:pointer; display:flex; align-items:center; justify-content:center;">
+      <span class="material-symbols-outlined" style="font-size:20px;">close</span>
+    </button>
+  </div>
+
+  <!-- Carte -->
+  <div id="map-fs" style="flex:1; width:100%;"></div>
+
+  <!-- Boutons bas plein écran -->
+  <div style="padding:12px 16px; padding-bottom:max(12px, env(safe-area-inset-bottom));
+              background:rgba(10,10,10,0.95); border-top:1px solid rgba(141,166,190,0.1); flex-shrink:0; display:flex; flex-direction:column; gap:8px;">
+    <div style="font-size:0.6rem; color:var(--muted); letter-spacing:0.15em; text-transform:uppercase; text-align:center;" id="fs-distance">Calcul en cours...</div>
+    <button onclick="confirmArrivalFromMap()" class="btn btn-accent" style="width:100%;">
+      <span class="material-symbols-outlined">check_circle</span>
+      Sur place
+    </button>
+    <button onclick="closeFullscreenMap()" class="btn btn-primary" style="width:100%;">
+      <span class="material-symbols-outlined">fullscreen_exit</span>
+      Fermer la carte
+    </button>
+  </div>
+</div>
+
 </body>
 </html>
