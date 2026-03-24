@@ -966,34 +966,25 @@ const state = {
    Fichier : audio/Suspense.mp3 (à uploader dans votre repo GitHub)
    ============================================================ */
 const BGM = {
-  audio: null, ctx: null, gainNode: null, source: null, playing: false,
+  audio:    null,
+  playing:  false,
   FULL_VOL: 0.55,
   DUCK_VOL: 0.30,
   FADE_MS:  800,
-  buffer:   null,
+  _fadeId:  null,
 };
 
-/* ── Init : HTMLAudioElement + Web Audio gain pour ducking ─────
-   On reste sur HTMLAudioElement (fiable partout) mais on le connecte
-   à un GainNode pour le ducking. La Media Session garde la session active.
+/* ── HTMLAudioElement pur — PAS de Web Audio ──────────────────
+   createMediaElementSource() empêche iOS de lire en background.
+   On utilise audio.volume directement pour le ducking.
 ── */
 function bgmInit() {
   if (BGM.audio) return;
   BGM.audio = new Audio('audio/Suspense.mp3');
-  BGM.audio.loop = true;
+  BGM.audio.loop    = true;
   BGM.audio.preload = 'auto';
-  try {
-    BGM.ctx = new (window.AudioContext || window.webkitAudioContext)();
-    BGM.gainNode = BGM.ctx.createGain();
-    BGM.gainNode.gain.value = 0;
-    BGM.source = BGM.ctx.createMediaElementSource(BGM.audio);
-    BGM.source.connect(BGM.gainNode);
-    BGM.gainNode.connect(BGM.ctx.destination);
-    console.log('[BGM] Web Audio init OK');
-  } catch(e) {
-    console.warn('[BGM] Fallback volume direct');
-    BGM.audio.volume = 0;
-  }
+  BGM.audio.volume  = 0;
+  console.log('[BGM] HTMLAudio init (pas de Web Audio)');
 }
 
 function bgmPlay() {
@@ -1001,43 +992,41 @@ function bgmPlay() {
     try {
       bgmInit();
       if (BGM.playing) return;
-      if (BGM.ctx?.state === 'suspended') await BGM.ctx.resume();
       await BGM.audio.play();
       BGM.playing = true;
       bgmFade(BGM.FULL_VOL, 1200);
       console.log('[BGM] Lecture démarrée');
-
-      // Media Session — clé pour la lecture en arrière-plan iOS
-      if ('mediaSession' in navigator) {
-        navigator.mediaSession.metadata = new MediaMetadata({
-          title:  'Run To Escape',
-          artist: 'Mission en cours',
-          album:  'Signal Perdu',
-          artwork: [{ src: 'https://edouardarchmbd.github.io/run-to-escape/icon-512.png', sizes: '512x512', type: 'image/png' }]
-        });
-        navigator.mediaSession.setActionHandler('play', () => {
-          if (BGM.ctx?.state === 'suspended') BGM.ctx.resume();
-          BGM.audio.play().catch(() => {});
-          BGM.playing = true;
-          navigator.mediaSession.playbackState = 'playing';
-        });
-        navigator.mediaSession.setActionHandler('pause', () => {
-          BGM.audio.pause();
-          BGM.playing = false;
-          navigator.mediaSession.playbackState = 'paused';
-        });
-        navigator.mediaSession.playbackState = 'playing';
-        console.log('[BGM] Media Session OK');
-      }
+      bgmRegisterMediaSession();
     } catch(e) {
       console.warn('[BGM] Erreur play:', e.message);
     }
   }, 0);
 }
 
+function bgmRegisterMediaSession() {
+  if (!('mediaSession' in navigator)) return;
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title:  'Run To Escape',
+    artist: 'Mission en cours',
+    album:  'Signal Perdu',
+    artwork: [{ src: 'https://edouardarchmbd.github.io/run-to-escape/icon-512.png', sizes: '512x512', type: 'image/png' }]
+  });
+  navigator.mediaSession.setActionHandler('play', () => {
+    BGM.audio?.play().catch(() => {});
+    BGM.playing = true;
+    navigator.mediaSession.playbackState = 'playing';
+  });
+  navigator.mediaSession.setActionHandler('pause', () => {
+    BGM.audio?.pause();
+    BGM.playing = false;
+    navigator.mediaSession.playbackState = 'paused';
+  });
+  navigator.mediaSession.playbackState = 'playing';
+  console.log('[BGM] Media Session OK');
+}
+
 function bgmDuck() {
   bgmFade(BGM.DUCK_VOL, BGM.FADE_MS);
-  if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
 }
 
 function bgmUnduck() {
@@ -1046,20 +1035,16 @@ function bgmUnduck() {
 }
 
 function bgmFade(targetVol, ms) {
-  if (!BGM.audio && !BGM.gainNode) return;
-  if (BGM.gainNode && BGM.ctx) {
-    const now = BGM.ctx.currentTime;
-    BGM.gainNode.gain.cancelScheduledValues(now);
-    BGM.gainNode.gain.setValueAtTime(BGM.gainNode.gain.value, now);
-    BGM.gainNode.gain.linearRampToValueAtTime(targetVol, now + ms / 1000);
-  } else if (BGM.audio) {
-    const start = BGM.audio.volume, diff = targetVol - start, steps = 20;
-    let i = 0;
-    const id = setInterval(() => {
-      BGM.audio.volume = Math.max(0, Math.min(1, start + diff * (++i / steps)));
-      if (i >= steps) clearInterval(id);
-    }, ms / steps);
-  }
+  if (!BGM.audio) return;
+  if (BGM._fadeId) clearInterval(BGM._fadeId);
+  const start = BGM.audio.volume;
+  const diff  = targetVol - start;
+  const steps = 20;
+  let i = 0;
+  BGM._fadeId = setInterval(() => {
+    BGM.audio.volume = Math.max(0, Math.min(1, start + diff * (++i / steps)));
+    if (i >= steps) { clearInterval(BGM._fadeId); BGM._fadeId = null; }
+  }, ms / steps);
 }
 
 /* ============================================================
