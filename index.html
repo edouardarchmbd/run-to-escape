@@ -973,14 +973,24 @@ function bgmInit() {
 }
 
 function bgmPlay() {
-  bgmInit();
-  if (BGM.playing) return;
-  if (BGM.ctx?.state === 'suspended') BGM.ctx.resume();
-  BGM.audio.play().then(() => {
-    BGM.playing = true;
-    bgmFade(BGM.FULL_VOL, 1200);
-    console.log('[BGM] Lecture démarrée');
-  }).catch(e => console.warn('[BGM] Bloqué (interaction requise):', e.message));
+  // Fire-and-forget — ne bloque JAMAIS l'exécution principale
+  // iOS peut prendre du temps à débloquer l'AudioContext
+  setTimeout(() => {
+    try {
+      bgmInit();
+      if (BGM.playing) return;
+      if (BGM.ctx?.state === 'suspended') {
+        BGM.ctx.resume().catch(() => {});
+      }
+      BGM.audio.play().then(() => {
+        BGM.playing = true;
+        bgmFade(BGM.FULL_VOL, 1200);
+        console.log('[BGM] Lecture démarrée');
+      }).catch(e => console.warn('[BGM] Bloqué:', e.message));
+    } catch(e) {
+      console.warn('[BGM] Erreur init:', e.message);
+    }
+  }, 0); // setTimeout(0) = non-bloquant, exécuté après la stack courante
 }
 
 function bgmDuck()   { bgmFade(BGM.DUCK_VOL, BGM.FADE_MS); }
@@ -1709,8 +1719,8 @@ function startMission() {
   /* ── Build the linear screen sequence from MISSION.steps ── */
   state.screenQueue = buildScreenQueue();
   state.screenIndex = 0;
-  bgmPlay(); // démarre la musique de fond au lancement de la mission
-  advanceMission();
+  advanceMission(); // transition écran en premier
+  bgmPlay();        // musique après — non-bloquant
 }
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -1724,7 +1734,7 @@ function buildScreenQueue() {
     if (step.type === 'move') {
       moveNum++;
       const screenId = moveNum === 1 ? 'screen-move1' : 'screen-move2';
-      queue.push({ screenId, step, si });
+      queue.push({ screenId, step, si, moveNum });
 
     } else if (step.type === 'message') {
       queue.push({ screenId: 'screen-message', step, si });
@@ -1750,7 +1760,7 @@ async function advanceMission() {
     return;
   }
 
-  const { screenId, step } = state.screenQueue[state.screenIndex];
+  const { screenId, step, moveNum: currentMoveNum } = state.screenQueue[state.screenIndex];
   const total   = state.screenQueue.length;
   const current = state.screenIndex + 1;
   const pct     = Math.round((current / total) * 100);
@@ -1775,8 +1785,7 @@ async function advanceMission() {
     if (progEl) progEl.style.width = pct + '%';
 
     /* POI name + maps link */
-    // Met à jour l'index pour la modale de navigation
-    _navCurrentIdx = moveNum;
+    _navCurrentIdx = currentMoveNum || 1;
     const nameEl = document.getElementById(screenId === 'screen-move1' ? 'move1-poi-name' : 'move2-poi-name');
     const linkEl = document.getElementById(screenId === 'screen-move1' ? 'maps-link-1'   : 'maps-link-2');
     if (nameEl) nameEl.textContent = poi?.tags?.name || poi?.name || '—';
