@@ -1256,7 +1256,7 @@ async function geocodeAddress(q) {
 /* ============================================================
    GÉOLOCALISATION — "Utiliser ma position"
    ============================================================ */
-function useMyLocation() {
+async function useMyLocation() {
   if (!navigator.geolocation) {
     showToast('GPS', 'Géolocalisation non supportée sur ce navigateur.', 3000);
     return;
@@ -1266,7 +1266,27 @@ function useMyLocation() {
   const status = document.getElementById('geo-status');
   const icon   = document.getElementById('geo-icon');
 
-  // État "chargement"
+  // Vérifie d'abord si la permission est déjà accordée/refusée
+  // (Permissions API — pas dispo sur tous les navigateurs)
+  if (navigator.permissions) {
+    try {
+      const perm = await navigator.permissions.query({ name: 'geolocation' });
+      if (perm.state === 'denied') {
+        // Permission déjà refusée — guide vers les réglages
+        status.innerHTML = 'Localisation bloquée — autorisez dans <strong style="color:var(--primary)">Réglages → Safari → Localisation</strong>';
+        icon.textContent = 'settings';
+        icon.style.color = 'var(--danger)';
+        btn.style.borderColor = 'rgba(192,80,80,0.3)';
+        // Tap sur le bouton ouvre les réglages iOS (ne fonctionne que sur iOS natif)
+        btn.onclick = () => {
+          showToast('Réglages', 'Allez dans Réglages → Safari → Localisation → Autoriser', 6000);
+        };
+        return;
+      }
+    } catch(e) { /* Permissions API non dispo — on continue */ }
+  }
+
+  // Lance la géolocalisation
   status.textContent = 'Localisation en cours…';
   icon.textContent   = 'hourglass_empty';
   icon.style.color   = 'var(--accent)';
@@ -1277,7 +1297,6 @@ function useMyLocation() {
       const lat = pos.coords.latitude;
       const lon = pos.coords.longitude;
 
-      // Reverse geocoding via Photon
       try {
         status.textContent = "Identification de l'adresse…";
         const r = await fetch(
@@ -1289,23 +1308,20 @@ function useMyLocation() {
           const p = f.properties;
           const label = [p.name, p.street, p.city, p.postcode]
             .filter(Boolean).join(', ');
-          // Remplit le champ et stocke les coords directement
           document.getElementById('address-input').value = label;
           state.address = label;
           state.lat = lat;
           state.lng = lon;
-          // Active le bouton confirmer
           document.getElementById('confirm-address-btn').disabled = false;
-          // Feedback succès
           status.textContent = 'Position détectée ✓';
           icon.textContent   = 'check_circle';
           icon.style.color   = 'var(--accent)';
           btn.style.borderColor = 'rgba(141,166,190,0.5)';
           return;
         }
-      } catch(e) { console.warn('[Géo]', e.message); }
+      } catch(e) { console.warn('[Géo reverse]', e.message); }
 
-      // Fallback : coordonnées brutes si reverse geocoding échoue
+      // Fallback coordonnées brutes
       state.lat = lat;
       state.lng = lon;
       state.address = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
@@ -1316,18 +1332,25 @@ function useMyLocation() {
       icon.style.color   = 'var(--accent)';
     },
     (err) => {
-      // Erreur GPS
-      const msgs = {
-        1: 'Accès refusé. Autorisez la localisation dans les réglages.',
-        2: 'Position indisponible. Vérifiez votre GPS.',
-        3: 'Délai dépassé. Réessayez.'
-      };
-      status.textContent = msgs[err.code] || 'Erreur GPS.';
-      icon.textContent   = 'error_outline';
-      icon.style.color   = 'var(--danger)';
+      if (err.code === 1) {
+        // Refus de permission — guide précis
+        status.innerHTML = 'Bloqué — Autorisez dans <strong style="color:var(--primary)">Réglages → Safari → Localisation</strong>';
+        icon.textContent = 'settings';
+        icon.style.color = 'var(--danger)';
+        btn.onclick = () => showToast('Réglages', 'Réglages → Confidentialité → Service de localisation → Safari', 7000);
+      } else if (err.code === 2) {
+        status.textContent = 'GPS indisponible — essayez en extérieur';
+        icon.textContent = 'gps_off';
+        icon.style.color = 'var(--danger)';
+      } else {
+        status.textContent = 'Délai dépassé — réessayez';
+        icon.textContent = 'refresh';
+        icon.style.color = 'var(--muted)';
+        btn.onclick = useMyLocation; // permet de réessayer
+      }
       btn.style.borderColor = 'rgba(192,80,80,0.3)';
     },
-    { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
+    { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 }
   );
 }
 
