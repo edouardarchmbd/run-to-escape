@@ -458,7 +458,7 @@ html, body { height: 100%; background: var(--bg); color: var(--on-bg); font-fami
 <div id="screen-move1" class="screen" style="overflow-y:auto;">
   <header class="topbar">
     <span class="topbar-title">Mission active</span>
-    <span class="chip" id="step-chip-1">Étape 1/6</span>
+    <span class="chip" id="step-counter">Étape</span>
   </header>
 
   <div class="phase-bar">
@@ -523,7 +523,7 @@ html, body { height: 100%; background: var(--bg); color: var(--on-bg); font-fami
 <div id="screen-message" class="screen" style="overflow-y:auto;">
   <header class="topbar">
     <span class="topbar-title">Canal chiffré</span>
-    <span class="chip">Étape 2/6</span>
+    <span class="chip" id="step-counter">Étape</span>
   </header>
 
   <div class="phase-bar px">
@@ -564,7 +564,7 @@ html, body { height: 100%; background: var(--bg); color: var(--on-bg); font-fami
 <div id="screen-clue" class="screen" style="overflow-y:auto;">
   <header class="topbar">
     <span class="topbar-title">Intel reçu</span>
-    <span class="chip">Étape 3/6</span>
+    <span class="chip" id="step-counter">Étape</span>
   </header>
 
   <div class="phase-bar px">
@@ -602,7 +602,7 @@ html, body { height: 100%; background: var(--bg); color: var(--on-bg); font-fami
 <div id="screen-puzzle" class="screen" style="overflow-y:auto;">
   <header class="topbar">
     <span class="topbar-title">Déchiffrement</span>
-    <span class="chip">Étape 4/6</span>
+    <span class="chip" id="step-counter">Étape</span>
   </header>
 
   <div class="phase-bar px">
@@ -632,7 +632,7 @@ html, body { height: 100%; background: var(--bg); color: var(--on-bg); font-fami
 <div id="screen-move2" class="screen" style="overflow-y:auto;">
   <header class="topbar">
     <span class="topbar-title">Mission active</span>
-    <span class="chip">Étape 5/6</span>
+    <span class="chip" id="step-counter">Étape</span>
   </header>
 
   <div class="phase-bar px">
@@ -1988,8 +1988,9 @@ async function advanceMission() {
     }
 
     /* Step chip label */
-    const chipEl = document.getElementById(screenId === 'screen-move1' ? 'step-chip-1' : null);
-    if (chipEl) chipEl.textContent = `Étape ${current}/${total}`;
+    document.querySelectorAll('.chip[id="step-counter"], #step-chip-1').forEach(el =>
+      el.textContent = `Étape ${current}/${total}`
+    );
 
     /* Audio */
     const audioEl = document.getElementById(`audio-el-${audioIdx}`);
@@ -2028,8 +2029,9 @@ async function advanceMission() {
     const msgCta = document.getElementById('msg-cta-label');
     if (msgCta) msgCta.textContent = step.ctaLabel || 'Continuer';
     /* Step chip */
-    const chip = document.querySelector('#screen-message .chip');
-    if (chip) chip.textContent = `Étape ${current}/${total}`;
+    document.querySelectorAll('#screen-message .chip').forEach(el =>
+      el.textContent = `Étape ${current}/${total}`
+    );
     /* Progress */
     const prog = document.querySelector('#screen-message .progress-fill');
     if (prog) prog.style.width = pct + '%';
@@ -2059,8 +2061,9 @@ async function advanceMission() {
     const ctaSpan = document.getElementById('clue-cta-label');
     if (ctaSpan) ctaSpan.textContent = step.ctaLabel || 'Continuer';
     /* Step chip */
-    const chip = document.querySelector('#screen-clue .chip');
-    if (chip) chip.textContent = `Étape ${current}/${total}`;
+    document.querySelectorAll('#screen-clue .chip').forEach(el =>
+      el.textContent = `Étape ${current}/${total}`
+    );
     /* Progress */
     const prog = document.querySelector('#screen-clue .progress-fill');
     if (prog) prog.style.width = pct + '%';
@@ -2089,8 +2092,9 @@ async function advanceMission() {
     document.getElementById('puzzle-choices').dataset.feedbackOk = step.feedbackCorrect || '✓ Correct.';
     document.getElementById('puzzle-choices').dataset.feedbackKo = step.feedbackWrong   || '✗ Incorrect.';
     /* Step chip */
-    const chip = document.querySelector('#screen-puzzle .chip');
-    if (chip) chip.textContent = `Étape ${current}/${total}`;
+    document.querySelectorAll('#screen-puzzle .chip').forEach(el =>
+      el.textContent = `Étape ${current}/${total}`
+    );
     /* Progress */
     const prog = document.querySelector('#screen-puzzle .progress-fill');
     if (prog) prog.style.width = pct + '%';
@@ -2317,13 +2321,7 @@ function launchNav(app) {
 
   window.open(url, '_blank');
 
-  // Informe l'utilisateur une seule fois que la musique reprend au retour
-  if (!sessionStorage.getItem('nav-tip-shown')) {
-    sessionStorage.setItem('nav-tip-shown', '1');
-    setTimeout(() => {
-      showToast('Musique', 'La musique reprend automatiquement quand vous revenez sur la mission.', 5000);
-    }, 800);
-  }
+
 }
 
 // Ferme la modale si on tape en dehors
