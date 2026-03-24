@@ -972,69 +972,80 @@ const BGM = {
   FADE_MS:  800,   // durée du fondu en ms
 };
 
-function bgmInit() {
-  if (BGM.audio) return;
-  BGM.audio = new Audio('audio/Suspense.mp3');
-  BGM.audio.loop = true;
-  BGM.audio.preload = 'auto';
+async function bgmInit() {
+  if (BGM.ctx) return; // déjà initialisé
   try {
     BGM.ctx = new (window.AudioContext || window.webkitAudioContext)();
     BGM.gainNode = BGM.ctx.createGain();
     BGM.gainNode.gain.value = 0;
-    BGM.source = BGM.ctx.createMediaElementSource(BGM.audio);
-    BGM.source.connect(BGM.gainNode);
     BGM.gainNode.connect(BGM.ctx.destination);
-    console.log('[BGM] Web Audio API initialisée');
+
+    // Charge le MP3 via fetch → ArrayBuffer → AudioBuffer
+    // AudioBufferSourceNode fonctionne en background sur iOS
+    // contrairement à HTMLAudioElement
+    console.log('[BGM] Chargement du fichier audio...');
+    const response = await fetch('audio/Suspense.mp3');
+    const arrayBuffer = await response.arrayBuffer();
+    BGM.buffer = await BGM.ctx.decodeAudioData(arrayBuffer);
+    console.log('[BGM] AudioBuffer prêt, durée:', BGM.buffer.duration.toFixed(1) + 's');
+
   } catch(e) {
+    console.warn('[BGM] AudioContext KO, fallback HTMLAudio:', e.message);
+    // Fallback HTMLAudio si fetch/decode échoue
+    BGM.audio = new Audio('audio/Suspense.mp3');
+    BGM.audio.loop = true;
     BGM.audio.volume = 0;
-    console.warn('[BGM] Fallback volume HTML5');
   }
 }
 
+function bgmCreateSource() {
+  if (!BGM.ctx || !BGM.buffer) return null;
+  const source = BGM.ctx.createBufferSource();
+  source.buffer = BGM.buffer;
+  source.loop = true;
+  source.connect(BGM.gainNode);
+  return source;
+}
+
 function bgmPlay() {
-  setTimeout(() => {
+  setTimeout(async () => {
     try {
-      bgmInit();
       if (BGM.playing) return;
       if (BGM.ctx?.state === 'suspended') BGM.ctx.resume().catch(() => {});
 
-      BGM.audio.play().then(() => {
+      // Attend que bgmInit (async) soit terminé
+      await bgmInit();
+
+      if (BGM.ctx && BGM.buffer) {
+        // AudioBufferSourceNode — fonctionne en background iOS
+        if (BGM.ctx.state === 'suspended') await BGM.ctx.resume();
+        BGM.source = bgmCreateSource();
+        BGM.source.start(0);
         BGM.playing = true;
         bgmFade(BGM.FULL_VOL, 1200);
-        console.log('[BGM] Lecture démarrée');
+        console.log('[BGM] AudioBuffer lecture démarrée');
 
-        // ── Media Session API ──────────────────────────────────────
-        // Enregistre l'audio comme session médias officielle iOS/Android
-        // → lecture en arrière-plan, Control Center, écran verrouillé
-        if ('mediaSession' in navigator) {
-          navigator.mediaSession.metadata = new MediaMetadata({
-            title:  'Run To Escape',
-            artist: 'Mission en cours',
-            album:  'Signal Perdu',
-            artwork: [
-              { src: 'https://edouardarchmbd.github.io/run-to-escape/icon-512.png',
-                sizes: '512x512', type: 'image/png' }
-            ]
-          });
-          // Actions de contrôle (obligatoires pour que iOS accepte la session)
-          navigator.mediaSession.setActionHandler('play',  () => {
-            BGM.audio.play().catch(() => {});
-            BGM.playing = true;
-          });
-          navigator.mediaSession.setActionHandler('pause', () => {
-            BGM.audio.pause();
-            BGM.playing = false;
-          });
-          navigator.mediaSession.setActionHandler('stop',  () => {
-            BGM.audio.pause();
-            BGM.audio.currentTime = 0;
-            BGM.playing = false;
-          });
-          navigator.mediaSession.playbackState = 'playing';
-          console.log('[BGM] Media Session enregistrée');
-        }
+      } else if (BGM.audio) {
+        // Fallback HTMLAudio
+        await BGM.audio.play();
+        BGM.playing = true;
+        bgmFade(BGM.FULL_VOL, 1200);
+        console.log('[BGM] HTMLAudio fallback démarré');
+      }
 
-      }).catch(e => console.warn('[BGM] Bloqué:', e.message));
+      // Media Session API
+      if ('mediaSession' in navigator) {
+        navigator.mediaSession.metadata = new MediaMetadata({
+          title:  'Run To Escape',
+          artist: 'Mission en cours',
+          album:  'Signal Perdu',
+          artwork: [{ src: 'https://edouardarchmbd.github.io/run-to-escape/icon-512.png', sizes: '512x512', type: 'image/png' }]
+        });
+        navigator.mediaSession.setActionHandler('play',  () => { BGM.ctx?.resume(); BGM.playing = true; });
+        navigator.mediaSession.setActionHandler('pause', () => { BGM.ctx?.suspend(); BGM.playing = false; });
+        navigator.mediaSession.playbackState = 'playing';
+        console.log('[BGM] Media Session enregistrée');
+      }
     } catch(e) {
       console.warn('[BGM] Erreur init:', e.message);
     }
@@ -1073,20 +1084,15 @@ function bgmFade(targetVol, ms) {
    ============================================================ */
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && BGM.playing) {
-    // Petit délai pour laisser iOS reprendre l'audio session
     setTimeout(() => {
-      if (BGM.ctx?.state === 'suspended') BGM.ctx.resume();
-      if (BGM.audio?.paused) {
-        BGM.audio.play().catch(() => {});
-      }
-      bgmUnduck();
-    }, 400);
-  }
-});
-
-window.addEventListener('pageshow', () => {
-  if (BGM.playing && BGM.audio?.paused) {
-    setTimeout(() => BGM.audio.play().catch(() => {}), 400);
+      // Reprend l'AudioContext si suspendu (iOS le suspend parfois)
+      if (BGM.ctx?.state === 'suspended') BGM.ctx.resume().then(() => {
+        bgmUnduck();
+        if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
+      });
+      // Fallback HTMLAudio
+      if (BGM.audio?.paused) BGM.audio.play().catch(() => {});
+    }, 300);
   }
 });
 
