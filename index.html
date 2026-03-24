@@ -332,78 +332,39 @@ html, body { height: 100%; background: var(--bg); color: var(--on-bg); font-fami
       Entrez une adresse complète. Nous localisons automatiquement les points d'intérêt autour de vous dans un rayon de 500–2000 m.
     </p>
 
-    <!-- ── SLIDER DISTANCE DE MISSION ─────────────────────── -->
-    <div id="distance-slider-block" style="margin-top:24px; padding:20px; background:var(--surface-2);">
-
-      <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:12px;">
-        <div>
-          <div class="section-tag" style="margin-bottom:2px;">Intensité de la mission</div>
-          <div style="font-family:var(--font-head); font-size:1.6rem; font-weight:800; color:var(--primary); letter-spacing:-0.02em; line-height:1;">
-            <span id="slider-km-display">5</span>
-            <span style="font-size:0.8rem; font-weight:600; color:var(--muted); letter-spacing:0.05em;"> km</span>
-          </div>
-        </div>
-        <div style="text-align:right;">
-          <div style="font-size:0.58rem; color:var(--muted); letter-spacing:0.15em; text-transform:uppercase; margin-bottom:2px;">Durée estimée</div>
-          <div style="font-size:0.85rem; font-family:var(--font-head); font-weight:700; color:var(--accent);" id="slider-time-display">~50 min</div>
-        </div>
-      </div>
-
-      <!-- Slider custom dans le style de la mission -->
-      <div style="position:relative; padding:8px 0;">
-        <input
-          type="range"
-          id="mission-distance-slider"
-          min="3" max="12" step="0.5" value="5"
-          oninput="onSliderChange(this.value)"
-          style="width:100%; appearance:none; -webkit-appearance:none; height:2px; background:transparent; outline:none; cursor:pointer;"
-        />
-        <!-- Track custom -->
-        <div style="position:absolute; top:50%; left:0; right:0; height:2px; transform:translateY(-50%); pointer-events:none; z-index:0;">
-          <div id="slider-track-fill" style="height:100%; background:var(--accent); width:18.2%;"></div>
-          <!-- Track vide -->
-          <div style="position:absolute; top:0; left:0; right:0; height:100%; background:var(--surface-3); z-index:-1;"></div>
-        </div>
-      </div>
-
-      <!-- Labels min/max -->
-      <div style="display:flex; justify-content:space-between; margin-top:6px;">
-        <span style="font-size:0.58rem; color:var(--muted); letter-spacing:0.15em; text-transform:uppercase;">3 km — Sprint</span>
-        <span style="font-size:0.58rem; color:var(--muted); letter-spacing:0.15em; text-transform:uppercase;">12 km — Élite</span>
-      </div>
-
-      <!-- Niveau label -->
-      <div style="margin-top:14px; display:flex; align-items:center; gap:8px;">
-        <div id="level-chip" class="chip" style="color:var(--accent);">AGENT</div>
-        <span id="level-desc" style="font-size:0.7rem; color:var(--muted);">Missions courtes, idéal pour débuter.</span>
+    <!-- ── SÉLECTEUR D'INTENSITÉ PAR FOURCHETTES ──────────── -->
+    <div style="margin-top:24px;">
+      <div class="section-tag" style="margin-bottom:12px;">Intensité de la mission</div>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;" id="intensity-grid">
       </div>
     </div>
 
-    <!-- Style du slider natif (thumb) -->
     <style>
-      #mission-distance-slider::-webkit-slider-thumb {
-        -webkit-appearance: none;
-        width: 20px; height: 20px;
-        background: var(--accent);
-        border: 2px solid var(--bg);
-        border-radius: 50%;
-        cursor: pointer;
-        position: relative; z-index: 2;
-        box-shadow: 0 0 0 3px rgba(141,166,190,0.15);
-        transition: box-shadow 0.15s;
+      .intensity-btn {
+        background: var(--surface-2); border: 1px solid rgba(255,255,255,0.05);
+        padding: 14px 12px; cursor: pointer; text-align: left;
+        transition: all 0.15s; position: relative; overflow: hidden;
       }
-      #mission-distance-slider::-webkit-slider-thumb:active {
-        box-shadow: 0 0 0 6px rgba(141,166,190,0.2);
+      .intensity-btn:active { transform: scale(0.97); }
+      .intensity-btn.selected {
+        background: var(--surface-3);
+        border-color: var(--accent);
       }
-      #mission-distance-slider::-moz-range-thumb {
-        width: 20px; height: 20px;
-        background: var(--accent);
-        border: 2px solid var(--bg);
-        border-radius: 50%;
-        cursor: pointer;
+      .intensity-btn.selected::before {
+        content: ''; position: absolute; top: 0; left: 0;
+        width: 2px; height: 100%; background: var(--accent);
       }
-      #mission-distance-slider::-webkit-slider-runnable-track { background: transparent; }
-      #mission-distance-slider::-moz-range-track { background: transparent; }
+      .intensity-range {
+        font-family: var(--font-head); font-weight: 800;
+        font-size: 1.1rem; color: var(--primary); letter-spacing: -0.02em;
+      }
+      .intensity-label {
+        font-size: 0.58rem; color: var(--accent); letter-spacing: 0.2em;
+        text-transform: uppercase; font-weight: 700; margin-top: 2px;
+      }
+      .intensity-time {
+        font-size: 0.65rem; color: var(--muted); margin-top: 4px;
+      }
     </style>
 
     <div style="flex:1;min-height:20px;"></div>
@@ -978,8 +939,69 @@ function resolveImgSrc(src) {
 const state = {
   address: '', lat: null, lng: null,
   poi1: null, poi2: null, poi3: null,
-  startTime: null, isDemo: false
+  startTime: null, isDemo: false, realDistanceM: null
 };
+
+/* ============================================================
+   MUSIQUE DE FOND — Web Audio API pour ducking iOS-compatible
+   Fichier : audio/Suspense.mp3 (à uploader dans votre repo GitHub)
+   ============================================================ */
+const BGM = {
+  audio: null, ctx: null, gainNode: null, source: null, playing: false,
+  FULL_VOL: 0.55,  // volume normal de fond
+  DUCK_VOL: 0.10,  // volume pendant les voix (ducking)
+  FADE_MS:  800,   // durée du fondu en ms
+};
+
+function bgmInit() {
+  if (BGM.audio) return;
+  BGM.audio = new Audio('audio/Suspense.mp3');
+  BGM.audio.loop = true;
+  BGM.audio.preload = 'auto';
+  try {
+    BGM.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    BGM.gainNode = BGM.ctx.createGain();
+    BGM.gainNode.gain.value = 0;
+    BGM.source = BGM.ctx.createMediaElementSource(BGM.audio);
+    BGM.source.connect(BGM.gainNode);
+    BGM.gainNode.connect(BGM.ctx.destination);
+    console.log('[BGM] Web Audio API initialisée');
+  } catch(e) {
+    BGM.audio.volume = 0;
+    console.warn('[BGM] Fallback volume HTML5');
+  }
+}
+
+function bgmPlay() {
+  bgmInit();
+  if (BGM.playing) return;
+  if (BGM.ctx?.state === 'suspended') BGM.ctx.resume();
+  BGM.audio.play().then(() => {
+    BGM.playing = true;
+    bgmFade(BGM.FULL_VOL, 1200);
+    console.log('[BGM] Lecture démarrée');
+  }).catch(e => console.warn('[BGM] Bloqué (interaction requise):', e.message));
+}
+
+function bgmDuck()   { bgmFade(BGM.DUCK_VOL, BGM.FADE_MS); }
+function bgmUnduck() { bgmFade(BGM.FULL_VOL, BGM.FADE_MS); }
+
+function bgmFade(targetVol, ms) {
+  if (!BGM.audio) return;
+  if (BGM.gainNode && BGM.ctx) {
+    const now = BGM.ctx.currentTime;
+    BGM.gainNode.gain.cancelScheduledValues(now);
+    BGM.gainNode.gain.setValueAtTime(BGM.gainNode.gain.value, now);
+    BGM.gainNode.gain.linearRampToValueAtTime(targetVol, now + ms / 1000);
+  } else {
+    const start = BGM.audio.volume, diff = targetVol - start, steps = 20;
+    let i = 0;
+    const id = setInterval(() => {
+      BGM.audio.volume = Math.max(0, Math.min(1, start + diff * (++i / steps)));
+      if (i >= steps) clearInterval(id);
+    }, ms / steps);
+  }
+}
 
 /* ============================================================
    NAVIGATION
@@ -1020,10 +1042,9 @@ function toggleAudio(idx) {
   if (!el) return;
 
   if (el.paused) {
-    // Met en pause tous les autres players
-    document.querySelectorAll('audio').forEach(a => { if (a !== el) { a.pause(); } });
+    document.querySelectorAll('audio').forEach(a => { if (a !== el) a.pause(); });
+    bgmDuck(); // baisse la musique
     el.play().catch(() => {
-      // Fichier MP3 absent → fallback TTS
       const txt = el.dataset.ttsText;
       if (txt && 'speechSynthesis' in window) {
         const u = new SpeechSynthesisUtterance(txt);
@@ -1031,16 +1052,19 @@ function toggleAudio(idx) {
         window.speechSynthesis.cancel();
         window.speechSynthesis.speak(u);
         ico.textContent = 'pause';
-        u.onend = () => { ico.textContent = 'play_arrow'; };
+        u.onend = () => { ico.textContent = 'play_arrow'; bgmUnduck(); };
       } else {
         showToast('Audio', 'Fichier audio introuvable : ' + el.src, 4000);
+        bgmUnduck();
       }
     });
     ico.textContent = 'pause';
+    el.addEventListener('ended', () => { ico.textContent = 'play_arrow'; bgmUnduck(); }, { once: true });
   } else {
     el.pause();
     window.speechSynthesis?.cancel();
     ico.textContent = 'play_arrow';
+    bgmUnduck(); // remonte si on pause manuellement
   }
 }
 
@@ -1077,103 +1101,46 @@ function bindAudioUI(idx) {
 }
 
 /* ============================================================
-   SLIDER DE DISTANCE
-   Règle un facteur qui scale les rayons min/max de chaque course
+   SÉLECTEUR D'INTENSITÉ PAR FOURCHETTES
+   Plages honnêtes — un km précis est impossible à garantir sans GPS
    ============================================================ */
 
-// Niveaux associés à chaque distance
-const DISTANCE_LEVELS = [
-  { min: 3,   max: 4,   label: 'RECRUE',   desc: 'Missions courtes, idéal pour débuter.',         color: 'var(--accent)' },
-  { min: 4,   max: 6,   label: 'AGENT',    desc: 'Format standard. 45-60 minutes.',                color: 'var(--accent)' },
-  { min: 6,   max: 8,   label: 'OFFICIER', desc: 'Terrain élargi. Bonne condition requise.',       color: '#a0c8a0' },
-  { min: 8,   max: 10,  label: 'VÉTÉRAN', desc: "Mission longue. Prévoyez de l’eau.",            color: '#c8a050' },
-  { min: 10,  max: 13,  label: 'ÉLITE',    desc: 'Opération extrême. Réservé aux agents aguerris.', color: '#c05050' },
+const INTENSITY_BANDS = [
+  { id:'s1', label:'RECRUE',   range:'3 – 5 km',   kmTarget: 4,  time:'~35 min', color:'var(--accent)' },
+  { id:'s2', label:'AGENT',    range:'5 – 8 km',   kmTarget: 6,  time:'~55 min', color:'var(--accent)' },
+  { id:'s3', label:'OFFICIER', range:'8 – 11 km',  kmTarget: 9,  time:'~1h20',   color:'#a0c8a0'       },
+  { id:'s4', label:'VÉTÉRAN',  range:'11 – 15 km', kmTarget: 12, time:'~1h50',   color:'#c8a050'       },
 ];
 
-function getLevel(km) {
-  return DISTANCE_LEVELS.find(l => km >= l.min && km < l.max) || DISTANCE_LEVELS[DISTANCE_LEVELS.length - 1];
+state.missionKm = 6; // défaut : AGENT
+
+function selectIntensity(bandId) {
+  const band = INTENSITY_BANDS.find(b => b.id === bandId);
+  if (!band) return;
+  state.missionKm = band.kmTarget;
+  document.querySelectorAll('.intensity-btn').forEach(btn =>
+    btn.classList.toggle('selected', btn.dataset.band === bandId)
+  );
 }
 
-// Convertit km total cible → rayon de recherche
-// Distance totale = 4 segments (départ→1→2→3→départ)
-// Rayon = distance par segment (km/4), avec marge ±30%
-function kmToSearchRadius(km) {
-  const segM = (km * 1000) / 4;  // mètres par segment
-  return {
-    rMin: Math.round(segM * 0.5), // au moins la moitié du segment
-    rMax: Math.round(segM * 1.3), // au plus 30% de marge au dessus
-  };
-}
-function kmToRadii(km) { return kmToSearchRadius(km); }
-
-/* ── OSRM — distance réelle à pied ────────────────────────────────
-   API publique, gratuite, pas de clé, CORS ok.
-   Endpoint : /route/v1/foot/{lon1},{lat1};{lon2},{lat2}
-   ──────────────────────────────────────────────────────────────── */
-async function getRealDistance(lat1, lon1, lat2, lon2) {
-  try {
-    const url = `https://router.project-osrm.org/route/v1/foot/${lon1},${lat1};${lon2},${lat2}?overview=false`;
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 5000);
-    let res;
-    try { res = await fetch(url, { signal: ctrl.signal }); }
-    finally { clearTimeout(timer); }
-    if (!res.ok) throw new Error('OSRM HTTP ' + res.status);
-    const data = await res.json();
-    if (data.routes?.[0]?.distance) return data.routes[0].distance; // mètres
-  } catch(e) {
-    console.warn('[OSRM]', e.message);
-  }
-  // Fallback : haversine × 1.25 (coefficient conservateur)
-  return haversine(lat1, lon1, lat2, lon2) * 1.25;
+function renderIntensityGrid() {
+  const grid = document.getElementById('intensity-grid');
+  if (!grid) return;
+  grid.innerHTML = INTENSITY_BANDS.map(b => `
+    <button class="intensity-btn ${b.id === 's2' ? 'selected' : ''}"
+            data-band="${b.id}" onclick="selectIntensity('${b.id}')">
+      <div class="intensity-range" style="color:${b.color}">${b.range}</div>
+      <div class="intensity-label" style="color:${b.color}">${b.label}</div>
+      <div class="intensity-time">${b.time}</div>
+    </button>`).join('');
 }
 
-/* Calcule la distance totale réelle d'un itinéraire départ→p1→p2→p3→départ */
-async function getRouteDistance(lat, lng, p1, p2, p3) {
-  const [d1, d2, d3, d4] = await Promise.all([
-    getRealDistance(lat, lng, p1.lat, p1.lon),
-    getRealDistance(p1.lat, p1.lon, p2.lat, p2.lon),
-    getRealDistance(p2.lat, p2.lon, p3.lat, p3.lon),
-    getRealDistance(p3.lat, p3.lon, lat, lng),
-  ]);
-  return d1 + d2 + d3 + d4; // mètres
+// Alias de compat pour fetchAndPrepareMission
+function kmToRadii(km) {
+  return { rMin: Math.round(km*250), rMax: Math.round(km*400) };
 }
 
-state.missionKm = 5; // valeur par défaut
-
-function onSliderChange(val) {
-  const km = parseFloat(val);
-  state.missionKm = km;
-
-  // Affichage km
-  document.getElementById('slider-km-display').textContent = km % 1 === 0 ? km : km.toFixed(1);
-
-  // Durée estimée (running ~6min/km, marche ~12min/km → moyenne ~9min/km)
-  const minTotal = Math.round(km * 9);
-  const h = Math.floor(minTotal / 60);
-  const m = minTotal % 60;
-  document.getElementById('slider-time-display').textContent =
-    h > 0 ? `~${h}h${m > 0 ? m : ''}` : `~${minTotal} min`;
-
-  // Track fill
-  const pct = ((km - 3) / (12 - 3)) * 100;
-  document.getElementById('slider-track-fill').style.width = pct + '%';
-
-  // Niveau
-  const level = getLevel(km);
-  const chip = document.getElementById('level-chip');
-  const desc = document.getElementById('level-desc');
-  chip.textContent = level.label;
-  chip.style.color  = level.color;
-  chip.style.background = level.color.replace(')', ', 0.12)').replace('var(', 'rgba(').replace('var(--accent)', 'rgba(141,166,190,0.12)').replace('rgba(rgba(', 'rgba(');
-  // Simpler approach for chip background
-  chip.style.background = '';
-  chip.style.opacity = '1';
-  if (desc) desc.textContent = level.desc;
-}
-
-// Init au chargement
-document.addEventListener('DOMContentLoaded', () => onSliderChange(5));
+document.addEventListener('DOMContentLoaded', renderIntensityGrid);
 
 /* ============================================================
    GÉOCODAGE Nominatim
@@ -1491,6 +1458,55 @@ function generateFictionalPOI(lat, lng, excludePOI) {
   };
 }
 
+/* ============================================================
+   OSRM — distances réelles à pied
+   project-osrm.org : gratuit, CORS ok, pas de clé API
+   ============================================================ */
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+let _osrmLastCall = 0;
+
+async function getRealDistance(lat1, lon1, lat2, lon2) {
+  // Espacement 150ms entre appels pour éviter le rate-limit 429
+  const wait = Math.max(0, 150 - (Date.now() - _osrmLastCall));
+  if (wait > 0) await sleep(wait);
+  _osrmLastCall = Date.now();
+
+  try {
+    const url = `https://router.project-osrm.org/route/v1/foot/${lon1},${lat1};${lon2},${lat2}?overview=false`;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 8000);
+    let res;
+    try { res = await fetch(url, { signal: ctrl.signal }); }
+    finally { clearTimeout(timer); }
+
+    if (res.status === 429) {
+      await sleep(1500);
+      const res2 = await fetch(url);
+      if (res2.ok) {
+        const d2 = await res2.json();
+        if (d2.routes?.[0]?.distance) return d2.routes[0].distance;
+      }
+    }
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    if (data.routes?.[0]?.distance) return data.routes[0].distance;
+  } catch(e) {
+    // Fallback silencieux : haversine × 1.3
+  }
+  return haversine(lat1, lon1, lat2, lon2) * 1.3;
+}
+
+async function getRouteDistance(lat, lng, p1, p2, p3) {
+  const [d1, d2, d3, d4] = await Promise.all([
+    getRealDistance(lat, lng, p1.lat, p1.lon),
+    getRealDistance(p1.lat, p1.lon, p2.lat, p2.lon),
+    getRealDistance(p2.lat, p2.lon, p3.lat, p3.lon),
+    getRealDistance(p3.lat, p3.lon, lat, lng),
+  ]);
+  return d1 + d2 + d3 + d4;
+}
+
 async function fetchAndPrepareMission() {
   const targetKm  = state.missionKm || 5;
   const targetM   = targetKm * 1000;
@@ -1532,7 +1548,7 @@ async function fetchAndPrepareMission() {
   showLoading('Calcul des distances…');
   let scored = [];
   if (unique.length > 0) {
-    const batch = unique.slice(0, 15); // max 15 appels OSRM en parallèle
+    const batch = unique.slice(0, 8); // max 8 appels OSRM pour éviter le rate-limit
     const dists = await Promise.all(
       batch.map(p => getRealDistance(state.lat, state.lng, p.lat, p.lon))
     );
@@ -1670,6 +1686,7 @@ function startMission() {
   /* ── Build the linear screen sequence from MISSION.steps ── */
   state.screenQueue = buildScreenQueue();
   state.screenIndex = 0;
+  bgmPlay(); // démarre la musique de fond au lancement de la mission
   advanceMission();
 }
 
@@ -1857,12 +1874,19 @@ function playAudioEl(el) {
   if (!el) return;
   document.querySelectorAll('audio').forEach(a => { if (a !== el) a.pause(); });
   window.speechSynthesis?.cancel();
-  el.play().catch(() => {
+  bgmDuck(); // baisse la musique de fond
+  el.play().then(() => {
+    // Remonte la musique quand l'audio se termine
+    el.addEventListener('ended', () => bgmUnduck(), { once: true });
+  }).catch(() => {
     const txt = el.dataset.ttsText;
     if (txt && 'speechSynthesis' in window) {
       const u = new SpeechSynthesisUtterance(txt);
       u.lang = 'fr-FR'; u.rate = 0.92; u.pitch = 0.82;
+      u.onend = () => bgmUnduck();
       window.speechSynthesis.speak(u);
+    } else {
+      bgmUnduck(); // pas de voix — remonte immédiatement
     }
   });
 }
