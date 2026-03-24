@@ -314,12 +314,31 @@ html, body { height: 100%; background: var(--bg); color: var(--on-bg); font-fami
     <div class="section-tag">Zone d'opération</div>
     <h2 class="display address-title">Votre position</h2>
 
+    <!-- Bouton géolocalisation -->
+    <button id="geolocate-btn" onclick="useMyLocation()" style="
+      width:100%; display:flex; align-items:center; gap:12px;
+      background:var(--surface-2); border:1px solid rgba(141,166,190,0.2);
+      padding:14px 16px; cursor:pointer; margin-bottom:8px; transition:background 0.12s;">
+      <span class="material-symbols-outlined" style="color:var(--accent);font-size:20px;">my_location</span>
+      <div style="text-align:left;">
+        <div style="font-family:var(--font-head);font-weight:700;font-size:0.82rem;color:var(--primary);text-transform:uppercase;letter-spacing:0.04em;">Utiliser ma position</div>
+        <div style="font-size:0.65rem;color:var(--muted);margin-top:1px;" id="geo-status">Localisation automatique via GPS</div>
+      </div>
+      <span class="material-symbols-outlined" id="geo-icon" style="margin-left:auto;color:var(--muted);font-size:18px;">chevron_right</span>
+    </button>
+
+    <!-- Séparateur -->
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+      <div style="flex:1;height:1px;background:rgba(255,255,255,0.06);"></div>
+      <span style="font-size:0.58rem;color:var(--muted);letter-spacing:0.2em;text-transform:uppercase;font-weight:700;">ou</span>
+      <div style="flex:1;height:1px;background:rgba(255,255,255,0.06);"></div>
+    </div>
+
     <div class="input-wrap" style="position:relative;">
       <span class="material-symbols-outlined input-icon">location_on</span>
       <input class="input-field" id="address-input" type="text"
-             placeholder="Saisir l'adresse de déploiement..."
+             placeholder="Saisir l'adresse manuellement..."
              autocomplete="off" oninput="onAddressInput(this.value)"/>
-      <!-- Dropdown collé sous le champ, z-index élevé pour passer au-dessus du slider -->
       <div id="address-suggestions"
            style="position:absolute; top:100%; left:0; right:0; z-index:999;
                   background:var(--surface-2); max-height:240px; overflow-y:auto;
@@ -371,7 +390,7 @@ html, body { height: 100%; background: var(--bg); color: var(--on-bg); font-fami
 
     <div class="card-accent" style="font-size:0.73rem; color:var(--muted); line-height:1.6; margin-bottom:16px;">
       <span class="chip" style="margin-bottom:6px; display:inline-flex;">Confidentiel</span><br/>
-      Aucun GPS requis. Votre localisation n'est jamais transmise à un serveur.
+      Votre localisation n'est utilisée que sur votre appareil.
     </div>
 
     <button class="btn btn-primary" id="confirm-address-btn" onclick="confirmAddress()" disabled>
@@ -1234,6 +1253,84 @@ async function geocodeAddress(q) {
   throw new Error('Géocodage inaccessible (3 services essayés)');
 }
 
+/* ============================================================
+   GÉOLOCALISATION — "Utiliser ma position"
+   ============================================================ */
+function useMyLocation() {
+  if (!navigator.geolocation) {
+    showToast('GPS', 'Géolocalisation non supportée sur ce navigateur.', 3000);
+    return;
+  }
+
+  const btn    = document.getElementById('geolocate-btn');
+  const status = document.getElementById('geo-status');
+  const icon   = document.getElementById('geo-icon');
+
+  // État "chargement"
+  status.textContent = 'Localisation en cours…';
+  icon.textContent   = 'hourglass_empty';
+  icon.style.color   = 'var(--accent)';
+  btn.style.borderColor = 'rgba(141,166,190,0.4)';
+
+  navigator.geolocation.getCurrentPosition(
+    async (pos) => {
+      const lat = pos.coords.latitude;
+      const lon = pos.coords.longitude;
+
+      // Reverse geocoding via Photon
+      try {
+        status.textContent = "Identification de l'adresse…";
+        const r = await fetch(
+          `https://photon.komoot.io/reverse?lat=${lat}&lon=${lon}&lang=fr`
+        );
+        const data = await r.json();
+        const f = data.features?.[0];
+        if (f) {
+          const p = f.properties;
+          const label = [p.name, p.street, p.city, p.postcode]
+            .filter(Boolean).join(', ');
+          // Remplit le champ et stocke les coords directement
+          document.getElementById('address-input').value = label;
+          state.address = label;
+          state.lat = lat;
+          state.lng = lon;
+          // Active le bouton confirmer
+          document.getElementById('confirm-address-btn').disabled = false;
+          // Feedback succès
+          status.textContent = 'Position détectée ✓';
+          icon.textContent   = 'check_circle';
+          icon.style.color   = 'var(--accent)';
+          btn.style.borderColor = 'rgba(141,166,190,0.5)';
+          return;
+        }
+      } catch(e) { console.warn('[Géo]', e.message); }
+
+      // Fallback : coordonnées brutes si reverse geocoding échoue
+      state.lat = lat;
+      state.lng = lon;
+      state.address = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+      document.getElementById('address-input').value = state.address;
+      document.getElementById('confirm-address-btn').disabled = false;
+      status.textContent = 'Position GPS détectée ✓';
+      icon.textContent   = 'check_circle';
+      icon.style.color   = 'var(--accent)';
+    },
+    (err) => {
+      // Erreur GPS
+      const msgs = {
+        1: 'Accès refusé. Autorisez la localisation dans les réglages.',
+        2: 'Position indisponible. Vérifiez votre GPS.',
+        3: 'Délai dépassé. Réessayez.'
+      };
+      status.textContent = msgs[err.code] || 'Erreur GPS.';
+      icon.textContent   = 'error_outline';
+      icon.style.color   = 'var(--danger)';
+      btn.style.borderColor = 'rgba(192,80,80,0.3)';
+    },
+    { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
+  );
+}
+
 function onAddressInput(v) {
   state.address = v;
   const btn = document.getElementById('confirm-address-btn');
@@ -2054,27 +2151,11 @@ function launchNav(app) {
 
   let url;
   switch(app) {
-    case 'googlemaps':
-      url = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}&travelmode=walking`;
-      break;
-
-    case 'komoot':
-      // Komoot deep link : ouvre l'app ou le site avec recherche de route
-      // depuis la position actuelle vers les coordonnées
-      url = `https://www.komoot.com/plan/#map=14/${lat}/${lon}`;
-      break;
-
-    case 'strava':
-      // Strava n'a pas de deep link de navigation directe,
-      // on ouvre la carte Strava Heatmap centrée sur le point
-      url = `https://www.strava.com/maps/global-heatmap#12/${lon}/${lat}`;
-      break;
-
     case 'apple':
-      // Apple Maps deep link (fonctionne sur iOS)
+      // Apple Maps — deep link natif iOS, navigation à pied
       url = `http://maps.apple.com/?daddr=${lat},${lon}&dirflg=w`;
       break;
-
+    case 'googlemaps':
     default:
       url = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}&travelmode=walking`;
   }
@@ -2126,41 +2207,21 @@ function resetMission() {
     </div>
 
     <!-- Google Maps -->
-    <button class="nav-app-btn" id="nav-googlemaps" onclick="launchNav('googlemaps')">
+    <button class="nav-app-btn" onclick="launchNav('googlemaps')">
       <span style="font-size:1.4rem;">🗺</span>
       <div>
         <div class="nav-app-name">Google Maps</div>
-        <div class="nav-app-desc">Navigation standard, très précis</div>
+        <div class="nav-app-desc">Navigation à pied vers le point</div>
       </div>
       <span class="material-symbols-outlined" style="margin-left:auto;color:var(--muted);font-size:18px;">open_in_new</span>
     </button>
 
-    <!-- Komoot -->
-    <button class="nav-app-btn" id="nav-komoot" onclick="launchNav('komoot')">
-      <span style="font-size:1.4rem;">🏃</span>
-      <div>
-        <div class="nav-app-name">Komoot</div>
-        <div class="nav-app-desc">Routes running & trail recommandées</div>
-      </div>
-      <span class="material-symbols-outlined" style="margin-left:auto;color:var(--muted);font-size:18px;">open_in_new</span>
-    </button>
-
-    <!-- Strava -->
-    <button class="nav-app-btn" id="nav-strava" onclick="launchNav('strava')">
-      <span style="font-size:1.4rem;">⚡</span>
-      <div>
-        <div class="nav-app-name">Strava</div>
-        <div class="nav-app-desc">Segments populaires près de toi</div>
-      </div>
-      <span class="material-symbols-outlined" style="margin-left:auto;color:var(--muted);font-size:18px;">open_in_new</span>
-    </button>
-
-    <!-- Plans (Apple Maps) -->
-    <button class="nav-app-btn" id="nav-apple" onclick="launchNav('apple')">
+    <!-- Apple Maps -->
+    <button class="nav-app-btn" onclick="launchNav('apple')">
       <span style="font-size:1.4rem;">🍎</span>
       <div>
         <div class="nav-app-name">Plans (Apple Maps)</div>
-        <div class="nav-app-desc">Natif iOS, s'intègre avec l'Apple Watch</div>
+        <div class="nav-app-desc">Natif iOS · compatible Apple Watch</div>
       </div>
       <span class="material-symbols-outlined" style="margin-left:auto;color:var(--muted);font-size:18px;">open_in_new</span>
     </button>
