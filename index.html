@@ -992,28 +992,63 @@ function bgmInit() {
 }
 
 function bgmPlay() {
-  // Fire-and-forget — ne bloque JAMAIS l'exécution principale
-  // iOS peut prendre du temps à débloquer l'AudioContext
   setTimeout(() => {
     try {
       bgmInit();
       if (BGM.playing) return;
-      if (BGM.ctx?.state === 'suspended') {
-        BGM.ctx.resume().catch(() => {});
-      }
+      if (BGM.ctx?.state === 'suspended') BGM.ctx.resume().catch(() => {});
+
       BGM.audio.play().then(() => {
         BGM.playing = true;
         bgmFade(BGM.FULL_VOL, 1200);
         console.log('[BGM] Lecture démarrée');
+
+        // ── Media Session API ──────────────────────────────────────
+        // Enregistre l'audio comme session médias officielle iOS/Android
+        // → lecture en arrière-plan, Control Center, écran verrouillé
+        if ('mediaSession' in navigator) {
+          navigator.mediaSession.metadata = new MediaMetadata({
+            title:  'Run To Escape',
+            artist: 'Mission en cours',
+            album:  'Signal Perdu',
+            artwork: [
+              { src: 'https://edouardarchmbd.github.io/run-to-escape/icon-512.png',
+                sizes: '512x512', type: 'image/png' }
+            ]
+          });
+          // Actions de contrôle (obligatoires pour que iOS accepte la session)
+          navigator.mediaSession.setActionHandler('play',  () => {
+            BGM.audio.play().catch(() => {});
+            BGM.playing = true;
+          });
+          navigator.mediaSession.setActionHandler('pause', () => {
+            BGM.audio.pause();
+            BGM.playing = false;
+          });
+          navigator.mediaSession.setActionHandler('stop',  () => {
+            BGM.audio.pause();
+            BGM.audio.currentTime = 0;
+            BGM.playing = false;
+          });
+          navigator.mediaSession.playbackState = 'playing';
+          console.log('[BGM] Media Session enregistrée');
+        }
+
       }).catch(e => console.warn('[BGM] Bloqué:', e.message));
     } catch(e) {
       console.warn('[BGM] Erreur init:', e.message);
     }
-  }, 0); // setTimeout(0) = non-bloquant, exécuté après la stack courante
+  }, 0);
 }
 
-function bgmDuck()   { bgmFade(BGM.DUCK_VOL, BGM.FADE_MS); }
-function bgmUnduck() { bgmFade(BGM.FULL_VOL, BGM.FADE_MS); }
+function bgmDuck() {
+  bgmFade(BGM.DUCK_VOL, BGM.FADE_MS);
+  if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
+}
+function bgmUnduck() {
+  bgmFade(BGM.FULL_VOL, BGM.FADE_MS);
+  if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
+}
 
 function bgmFade(targetVol, ms) {
   if (!BGM.audio) return;
@@ -1158,10 +1193,10 @@ function bindAudioUI(idx) {
    ============================================================ */
 
 const INTENSITY_BANDS = [
-  { id:'s1', label:'RECRUE',   range:'3 – 5 km',   kmTarget: 4,  time:'~35 min', color:'var(--accent)' },
-  { id:'s2', label:'AGENT',    range:'5 – 8 km',   kmTarget: 6,  time:'~55 min', color:'var(--accent)' },
-  { id:'s3', label:'OFFICIER', range:'8 – 11 km',  kmTarget: 9,  time:'~1h20',   color:'#a0c8a0'       },
-  { id:'s4', label:'VÉTÉRAN',  range:'11 – 15 km', kmTarget: 12, time:'~1h50',   color:'#c8a050'       },
+  { id:'s1', label:'RECRUE',   range:'3 – 5 km',   kmTarget: 4,   time:'~35 min', color:'var(--accent)' },
+  { id:'s2', label:'AGENT',    range:'5 – 8 km',   kmTarget: 6.5, time:'~55 min', color:'var(--accent)' },
+  { id:'s3', label:'OFFICIER', range:'8 – 11 km',  kmTarget: 9,   time:'~1h20',   color:'#a0c8a0'       },
+  { id:'s4', label:'VÉTÉRAN',  range:'11 – 15 km', kmTarget: 12,  time:'~1h50',   color:'#c8a050'       },
 ];
 
 state.missionKm = 6; // défaut : AGENT
@@ -1711,7 +1746,7 @@ async function fetchAndPrepareMission() {
   let demo = false;
 
   /* ── 1. Fetch POIs — rayon généreux ── */
-  const searchRadius = Math.round(segTarget * 2.2);
+  const searchRadius = Math.round(segTarget * 1.8); // ~1.8x segTarget = rayon de recherche
   let allPOIs = [];
   try {
     const timeout = new Promise((_, r) => setTimeout(() => r(new Error('Timeout')), 15000));
@@ -1746,13 +1781,11 @@ async function fetchAndPrepareMission() {
       bearing: (Math.atan2(p.lon - state.lng, p.lat - state.lat) + Math.PI * 2) % (Math.PI * 2)
     }));
 
-    // ── FILTRE PLUS PERMISSIF : accepte entre 20% et 250% de segTarget ──
-    // Avant : 0.4–1.7 → rejetait trop de POIs valides
-    // Maintenant : on garde tout, on trie par proximité, mode démo seulement si vraiment vide
-    const inRange = scored.filter(({ d }) => d >= segTarget * 0.2 && d <= segTarget * 2.5);
-    console.log(`[OSRM] ${scored.length} distances calc. | ${inRange.length} dans la fourchette (±250%)`);
-    if (inRange.length > 0) scored = inRange;
-    // sinon on garde tout scored pour ne pas tomber en mode démo inutilement
+    // Filtre 0.65×–1.35× segTarget → boucle dans la fourchette annoncée
+    const inRange = scored.filter(({ d }) => d >= segTarget * 0.65 && d <= segTarget * 1.35);
+    const useRange = inRange.length > 0 ? inRange : scored; // fallback si zone peu dense
+    console.log(`[OSRM] ${scored.length} calc. | ${inRange.length} en fourchette | cible=${Math.round(segTarget)}m/seg`);
+    scored = useRange;
   }
 
   /* ── 4. Boucle en 3 secteurs de 120° ── */
