@@ -500,7 +500,7 @@ html, body { height: 100%; background: var(--bg); color: var(--on-bg); font-fami
   </div>
 
   <div class="action-grid">
-    <button class="btn btn-primary" onclick="openNavChoice(1)">
+    <button class="btn btn-primary" onclick="openNavChoice()">
       <span class="material-symbols-outlined">near_me</span>
       Ouvrir l'itinéraire
     </button>
@@ -674,7 +674,7 @@ html, body { height: 100%; background: var(--bg); color: var(--on-bg); font-fami
   </div>
 
   <div class="action-grid">
-    <button class="btn btn-primary" onclick="openNavChoice(2)">
+    <button class="btn btn-primary" onclick="openNavChoice()">
       <span class="material-symbols-outlined">near_me</span>
       Ouvrir l'itinéraire
     </button>
@@ -1722,13 +1722,15 @@ async function fetchAndPrepareMission() {
     demo = true;
   }
 
-  /* ── 2. Dédoublonnage ── */
+  /* ── 2. Dédoublonnage par coordonnées ET par nom ── */
   const seen = new Set();
   const unique = (demo ? demoPOIs(state.lat, state.lng, 0, 9999) : allPOIs).filter(p => {
     if (!p.tags?.name || p.lat == null) return false;
-    const key = `${p.lat.toFixed(3)},${p.lon.toFixed(3)}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
+    const coordKey = `${p.lat.toFixed(3)},${p.lon.toFixed(3)}`;
+    const nameKey  = 'n:' + p.tags.name.toLowerCase().trim().slice(0, 30);
+    if (seen.has(coordKey) || seen.has(nameKey)) return false;
+    seen.add(coordKey);
+    seen.add(nameKey);
     return true;
   });
   console.log(`[Mission] ${unique.length} POIs uniques`);
@@ -1781,14 +1783,17 @@ async function fetchAndPrepareMission() {
   const usedKeys = new Set();
 
   function pickAndMark(candidates, fallbackAngle) {
-    // Filtre les candidats déjà utilisés
-    const available = candidates.filter(
-      ({ p }) => !usedKeys.has(`${p.lat.toFixed(3)},${p.lon.toFixed(3)}`)
-    );
+    // Filtre par coordonnées ET par nom (évite deux entrées du même lieu)
+    const available = candidates.filter(({ p }) => {
+      const coordKey = `${p.lat.toFixed(3)},${p.lon.toFixed(3)}`;
+      const nameKey  = p.tags.name.toLowerCase().trim().slice(0, 30);
+      return !usedKeys.has(coordKey) && !usedKeys.has('name:' + nameKey);
+    });
     const top = available.slice(0, 3);
     if (top.length > 0) {
       const chosen = top[Math.floor(Math.random() * top.length)];
       usedKeys.add(`${chosen.p.lat.toFixed(3)},${chosen.p.lon.toFixed(3)}`);
+      usedKeys.add('name:' + chosen.p.tags.name.toLowerCase().trim().slice(0, 30));
       return chosen.p;
     }
     // Vraiment rien → point fictif calibré dans la bonne direction
@@ -1822,9 +1827,14 @@ async function fetchAndPrepareMission() {
 
   // Détecte si deux POIs ont les mêmes coordonnées
   const coords = [state.poi1, state.poi2, state.poi3].map(p => `${p.lat?.toFixed(3)},${p.lon?.toFixed(3)}`);
-  const dupes = coords.filter((c, i) => coords.indexOf(c) !== i);
-  if (dupes.length) console.warn('[Mission] ⚠ POIs en double détectés :', dupes);
-  else console.log('[Mission] ✓ Tous les POIs sont distincts');
+  const names  = [state.poi1, state.poi2, state.poi3].map(p => p.tags.name.toLowerCase().trim().slice(0, 30));
+  const coordDupes = coords.filter((c, i) => coords.indexOf(c) !== i);
+  const nameDupes  = names.filter((n, i) => names.indexOf(n) !== i);
+  if (coordDupes.length || nameDupes.length) {
+    console.warn('[Mission] ⚠ POIs en double :', { coordDupes, nameDupes });
+  } else {
+    console.log('[Mission] ✓ Tous les POIs sont distincts (coordonnées + noms)');
+  }
 
   /* ── 5. Distance réelle + waypoints OSRM pour Maps ── */
   state.realDistanceM = null;
@@ -2231,7 +2241,9 @@ async function completeMission() {
 let _navCurrentIdx = 1; // index du move en cours (1 ou 2)
 
 function openNavChoice(moveIdx) {
-  _navCurrentIdx = moveIdx;
+  // moveIdx optionnel — si fourni, override ; sinon utilise _navCurrentIdx
+  // déjà mis à jour par advanceMission
+  if (moveIdx !== undefined) _navCurrentIdx = moveIdx;
   const modal = document.getElementById('nav-modal');
   modal.style.display = 'flex';
   // Animation d'entrée
