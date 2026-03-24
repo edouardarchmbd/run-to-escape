@@ -967,73 +967,47 @@ const state = {
    ============================================================ */
 const BGM = {
   audio: null, ctx: null, gainNode: null, source: null, playing: false,
-  FULL_VOL: 0.55,  // volume normal de fond
-  DUCK_VOL: 0.30,  // volume pendant les voix (ducking)
-  FADE_MS:  800,   // durée du fondu en ms
+  FULL_VOL: 0.55,
+  DUCK_VOL: 0.30,
+  FADE_MS:  800,
+  buffer:   null,
 };
 
-async function bgmInit() {
-  if (BGM.ctx) return; // déjà initialisé
+/* ── Init : HTMLAudioElement + Web Audio gain pour ducking ─────
+   On reste sur HTMLAudioElement (fiable partout) mais on le connecte
+   à un GainNode pour le ducking. La Media Session garde la session active.
+── */
+function bgmInit() {
+  if (BGM.audio) return;
+  BGM.audio = new Audio('audio/Suspense.mp3');
+  BGM.audio.loop = true;
+  BGM.audio.preload = 'auto';
   try {
     BGM.ctx = new (window.AudioContext || window.webkitAudioContext)();
     BGM.gainNode = BGM.ctx.createGain();
     BGM.gainNode.gain.value = 0;
+    BGM.source = BGM.ctx.createMediaElementSource(BGM.audio);
+    BGM.source.connect(BGM.gainNode);
     BGM.gainNode.connect(BGM.ctx.destination);
-
-    // Charge le MP3 via fetch → ArrayBuffer → AudioBuffer
-    // AudioBufferSourceNode fonctionne en background sur iOS
-    // contrairement à HTMLAudioElement
-    console.log('[BGM] Chargement du fichier audio...');
-    const response = await fetch('audio/Suspense.mp3');
-    const arrayBuffer = await response.arrayBuffer();
-    BGM.buffer = await BGM.ctx.decodeAudioData(arrayBuffer);
-    console.log('[BGM] AudioBuffer prêt, durée:', BGM.buffer.duration.toFixed(1) + 's');
-
+    console.log('[BGM] Web Audio init OK');
   } catch(e) {
-    console.warn('[BGM] AudioContext KO, fallback HTMLAudio:', e.message);
-    // Fallback HTMLAudio si fetch/decode échoue
-    BGM.audio = new Audio('audio/Suspense.mp3');
-    BGM.audio.loop = true;
+    console.warn('[BGM] Fallback volume direct');
     BGM.audio.volume = 0;
   }
-}
-
-function bgmCreateSource() {
-  if (!BGM.ctx || !BGM.buffer) return null;
-  const source = BGM.ctx.createBufferSource();
-  source.buffer = BGM.buffer;
-  source.loop = true;
-  source.connect(BGM.gainNode);
-  return source;
 }
 
 function bgmPlay() {
   setTimeout(async () => {
     try {
+      bgmInit();
       if (BGM.playing) return;
-      if (BGM.ctx?.state === 'suspended') BGM.ctx.resume().catch(() => {});
+      if (BGM.ctx?.state === 'suspended') await BGM.ctx.resume();
+      await BGM.audio.play();
+      BGM.playing = true;
+      bgmFade(BGM.FULL_VOL, 1200);
+      console.log('[BGM] Lecture démarrée');
 
-      // Attend que bgmInit (async) soit terminé
-      await bgmInit();
-
-      if (BGM.ctx && BGM.buffer) {
-        // AudioBufferSourceNode — fonctionne en background iOS
-        if (BGM.ctx.state === 'suspended') await BGM.ctx.resume();
-        BGM.source = bgmCreateSource();
-        BGM.source.start(0);
-        BGM.playing = true;
-        bgmFade(BGM.FULL_VOL, 1200);
-        console.log('[BGM] AudioBuffer lecture démarrée');
-
-      } else if (BGM.audio) {
-        // Fallback HTMLAudio
-        await BGM.audio.play();
-        BGM.playing = true;
-        bgmFade(BGM.FULL_VOL, 1200);
-        console.log('[BGM] HTMLAudio fallback démarré');
-      }
-
-      // Media Session API
+      // Media Session — clé pour la lecture en arrière-plan iOS
       if ('mediaSession' in navigator) {
         navigator.mediaSession.metadata = new MediaMetadata({
           title:  'Run To Escape',
@@ -1041,13 +1015,22 @@ function bgmPlay() {
           album:  'Signal Perdu',
           artwork: [{ src: 'https://edouardarchmbd.github.io/run-to-escape/icon-512.png', sizes: '512x512', type: 'image/png' }]
         });
-        navigator.mediaSession.setActionHandler('play',  () => { BGM.ctx?.resume(); BGM.playing = true; });
-        navigator.mediaSession.setActionHandler('pause', () => { BGM.ctx?.suspend(); BGM.playing = false; });
+        navigator.mediaSession.setActionHandler('play', () => {
+          if (BGM.ctx?.state === 'suspended') BGM.ctx.resume();
+          BGM.audio.play().catch(() => {});
+          BGM.playing = true;
+          navigator.mediaSession.playbackState = 'playing';
+        });
+        navigator.mediaSession.setActionHandler('pause', () => {
+          BGM.audio.pause();
+          BGM.playing = false;
+          navigator.mediaSession.playbackState = 'paused';
+        });
         navigator.mediaSession.playbackState = 'playing';
-        console.log('[BGM] Media Session enregistrée');
+        console.log('[BGM] Media Session OK');
       }
     } catch(e) {
-      console.warn('[BGM] Erreur init:', e.message);
+      console.warn('[BGM] Erreur play:', e.message);
     }
   }, 0);
 }
@@ -1056,19 +1039,20 @@ function bgmDuck() {
   bgmFade(BGM.DUCK_VOL, BGM.FADE_MS);
   if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
 }
+
 function bgmUnduck() {
   bgmFade(BGM.FULL_VOL, BGM.FADE_MS);
   if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
 }
 
 function bgmFade(targetVol, ms) {
-  if (!BGM.audio) return;
+  if (!BGM.audio && !BGM.gainNode) return;
   if (BGM.gainNode && BGM.ctx) {
     const now = BGM.ctx.currentTime;
     BGM.gainNode.gain.cancelScheduledValues(now);
     BGM.gainNode.gain.setValueAtTime(BGM.gainNode.gain.value, now);
     BGM.gainNode.gain.linearRampToValueAtTime(targetVol, now + ms / 1000);
-  } else {
+  } else if (BGM.audio) {
     const start = BGM.audio.volume, diff = targetVol - start, steps = 20;
     let i = 0;
     const id = setInterval(() => {
@@ -1085,13 +1069,10 @@ function bgmFade(targetVol, ms) {
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && BGM.playing) {
     setTimeout(() => {
-      // Reprend l'AudioContext si suspendu (iOS le suspend parfois)
-      if (BGM.ctx?.state === 'suspended') BGM.ctx.resume().then(() => {
-        bgmUnduck();
-        if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
-      });
-      // Fallback HTMLAudio
+      if (BGM.ctx?.state === 'suspended') BGM.ctx.resume().catch(() => {});
       if (BGM.audio?.paused) BGM.audio.play().catch(() => {});
+      if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
+      bgmUnduck();
     }, 300);
   }
 });
