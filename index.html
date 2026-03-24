@@ -227,6 +227,7 @@ html, body { height: 100%; background: var(--bg); color: var(--on-bg); font-fami
 .clue-img-ref { position: absolute; top: 10px; right: 10px; background: rgba(8,8,8,0.82); padding: 3px 8px; font-size: 0.56rem; color: var(--accent); letter-spacing: 0.2em; font-family: 'Courier New'; font-weight: 700; }
 .clue-desc  { margin: 12px 20px; font-size: 0.78rem; color: var(--muted); line-height: 1.7; font-style: italic; }
 </style>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
 </head>
 <body>
 <div class="noise"></div>
@@ -500,9 +501,14 @@ html, body { height: 100%; background: var(--bg); color: var(--on-bg); font-fami
   </div>
 
   <div class="action-grid">
-    <button class="btn btn-primary" onclick="openNavChoice()">
-      <span class="material-symbols-outlined">near_me</span>
-      Ouvrir l'itinéraire
+    <!-- Carte GPS intégrée -->
+    <div id="map-container-1" style="display:none; height:240px; margin:0 0 8px; position:relative; border:1px solid rgba(141,166,190,0.15);">
+      <div id="map-1" style="width:100%; height:100%;"></div>
+      <button onclick="closeMap(1)" style="position:absolute; top:8px; right:8px; z-index:1000; background:rgba(10,10,10,0.85); border:none; color:#8da6be; width:28px; height:28px; cursor:pointer; font-size:16px; display:flex; align-items:center; justify-content:center;">✕</button>
+    </div>
+    <button class="btn btn-primary" id="map-btn-1" onclick="toggleMap(1)">
+      <span class="material-symbols-outlined">map</span>
+      Voir l'itinéraire
     </button>
     <div class="action-row">
       <button class="btn btn-accent" onclick="next()">
@@ -674,9 +680,14 @@ html, body { height: 100%; background: var(--bg); color: var(--on-bg); font-fami
   </div>
 
   <div class="action-grid">
-    <button class="btn btn-primary" onclick="openNavChoice()">
-      <span class="material-symbols-outlined">near_me</span>
-      Ouvrir l'itinéraire
+    <!-- Carte GPS intégrée -->
+    <div id="map-container-2" style="display:none; height:240px; margin:0 0 8px; position:relative; border:1px solid rgba(141,166,190,0.15);">
+      <div id="map-2" style="width:100%; height:100%;"></div>
+      <button onclick="closeMap(2)" style="position:absolute; top:8px; right:8px; z-index:1000; background:rgba(10,10,10,0.85); border:none; color:#8da6be; width:28px; height:28px; cursor:pointer; font-size:16px; display:flex; align-items:center; justify-content:center;">✕</button>
+    </div>
+    <button class="btn btn-primary" id="map-btn-2" onclick="toggleMap(2)">
+      <span class="material-symbols-outlined">map</span>
+      Voir l'itinéraire
     </button>
     <button class="btn btn-accent" onclick="next()">
       <span class="material-symbols-outlined" style="font-size:17px;">check_circle</span>
@@ -2250,6 +2261,183 @@ async function completeMission() {
 }
 
 /* ============================================================
+   CARTE GPS INTÉGRÉE — Leaflet + GraphHopper
+   ============================================================ */
+const GRAPHHOPPER_KEY = '2e736d2e-df01-483d-8bec-93f43a5fb0ee'; // ← remplacer par ta clé
+
+const mapState = {
+  maps:    {},   // { 1: leafletMap, 2: leafletMap }
+  markers: {},   // position utilisateur
+  routes:  {},   // polylines du tracé
+  watchId: null, // geolocation watchPosition
+  userPos: null, // { lat, lng } position actuelle
+};
+
+// Style sombre pour les tuiles OSM
+function getTileLayer() {
+  return L.tileLayer(
+    'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+    { attribution: '© CartoDB', maxZoom: 19 }
+  );
+}
+
+async function toggleMap(idx) {
+  const container = document.getElementById(`map-container-${idx}`);
+  const btn       = document.getElementById(`map-btn-${idx}`);
+  if (!container) return;
+
+  const isVisible = container.style.display !== 'none';
+  if (isVisible) {
+    closeMap(idx);
+    return;
+  }
+
+  // Affiche le container
+  container.style.display = 'block';
+  btn.innerHTML = '<span class="material-symbols-outlined">close</span> Fermer la carte';
+
+  // Initialise la carte si pas encore fait
+  if (!mapState.maps[idx]) {
+    await initMap(idx);
+  } else {
+    // Re-centre sur la position actuelle
+    if (mapState.userPos) {
+      mapState.maps[idx].setView([mapState.userPos.lat, mapState.userPos.lng], 15);
+    }
+    setTimeout(() => mapState.maps[idx].invalidateSize(), 100);
+  }
+}
+
+function closeMap(idx) {
+  const container = document.getElementById(`map-container-${idx}`);
+  const btn       = document.getElementById(`map-btn-${idx}`);
+  if (container) container.style.display = 'none';
+  if (btn) btn.innerHTML = '<span class="material-symbols-outlined">map</span> Voir l’itinéraire';
+}
+
+async function initMap(idx) {
+  // POI cible selon l'index de la course
+  const poi = idx === 1 ? state.poi1 : idx === 2 ? state.poi2 : state.poi3;
+  if (!poi) return;
+
+  // Centre initial = position utilisateur ou départ de mission
+  const startLat = mapState.userPos?.lat || state.lat;
+  const startLng = mapState.userPos?.lng || state.lng;
+
+  const map = L.map(`map-${idx}`, {
+    center: [startLat, startLng],
+    zoom: 15,
+    zoomControl: true,
+    attributionControl: false,
+  });
+
+  getTileLayer().addTo(map);
+  mapState.maps[idx] = map;
+
+  // Marqueur destination
+  const destIcon = L.divIcon({
+    className: '',
+    html: '<div style="width:14px;height:14px;background:#8da6be;border:2px solid #fff;border-radius:50%;"></div>',
+    iconSize: [14, 14], iconAnchor: [7, 7]
+  });
+  L.marker([poi.lat, poi.lon], { icon: destIcon })
+    .bindPopup(`<b>${poi.tags?.name || 'Destination'}</b>`)
+    .addTo(map);
+
+  // Marqueur utilisateur
+  const userIcon = L.divIcon({
+    className: '',
+    html: '<div style="width:16px;height:16px;background:#fff;border:3px solid #8da6be;border-radius:50%;box-shadow:0 0 0 4px rgba(141,166,190,0.2);"></div>',
+    iconSize: [16, 16], iconAnchor: [8, 8]
+  });
+  const userMarker = L.marker([startLat, startLng], { icon: userIcon }).addTo(map);
+  mapState.markers[idx] = userMarker;
+
+  // Trace la route GraphHopper
+  await drawRoute(idx, startLat, startLng, poi.lat, poi.lon);
+
+  // GPS en temps réel
+  startGPSWatch(idx);
+
+  setTimeout(() => map.invalidateSize(), 150);
+}
+
+async function drawRoute(idx, fromLat, fromLng, toLat, toLng) {
+  const map = mapState.maps[idx];
+  if (!map) return;
+
+  try {
+    const url = `https://graphhopper.com/api/1/route?point=${fromLat},${fromLng}&point=${toLat},${toLng}&vehicle=foot&locale=fr&key=${GRAPHHOPPER_KEY}&type=json&points_encoded=false`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('GraphHopper ' + res.status);
+    const data = await res.json();
+    const pts  = data.paths?.[0]?.points?.coordinates;
+    if (!pts?.length) throw new Error('Pas de tracé');
+
+    // Supprime ancien tracé
+    if (mapState.routes[idx]) map.removeLayer(mapState.routes[idx]);
+
+    // Tracé principal
+    const latlngs = pts.map(c => [c[1], c[0]]);
+    const route   = L.polyline(latlngs, {
+      color: '#8da6be', weight: 4, opacity: 0.9, lineCap: 'round', lineJoin: 'round'
+    }).addTo(map);
+    mapState.routes[idx] = route;
+
+    // Halo sous le tracé
+    L.polyline(latlngs, { color: '#8da6be', weight: 12, opacity: 0.1 }).addTo(map);
+
+    // Zoom sur le tracé complet
+    map.fitBounds(route.getBounds(), { padding: [24, 24] });
+
+    // Distance du tracé
+    const distM = data.paths[0].distance;
+    const distTxt = distM >= 1000
+      ? (distM/1000).toFixed(1) + ' km'
+      : Math.round(distM) + ' m';
+    const timeMin = Math.round(data.paths[0].time / 60000);
+    console.log(`[MAP] Tracé GraphHopper: ${distTxt}, ~${timeMin} min`);
+
+  } catch(e) {
+    console.warn('[MAP] GraphHopper KO, tracé ligne droite:', e.message);
+    // Fallback : ligne droite
+    const fromPt = mapState.userPos
+      ? [mapState.userPos.lat, mapState.userPos.lng]
+      : [state.lat, state.lng];
+    L.polyline([fromPt, [toLat, toLng]], {
+      color: '#8da6be', weight: 3, opacity: 0.6, dashArray: '8 6'
+    }).addTo(mapState.maps[idx]);
+  }
+}
+
+function startGPSWatch(idx) {
+  if (mapState.watchId !== null) return; // déjà actif
+  if (!navigator.geolocation) return;
+
+  mapState.watchId = navigator.geolocation.watchPosition(
+    (pos) => {
+      const lat = pos.coords.latitude;
+      const lng = pos.coords.longitude;
+      mapState.userPos = { lat, lng };
+
+      // Met à jour tous les marqueurs actifs
+      Object.entries(mapState.markers).forEach(([i, marker]) => {
+        marker.setLatLng([lat, lng]);
+      });
+    },
+    (e) => console.warn('[GPS]', e.message),
+    { enableHighAccuracy: true, maximumAge: 3000, timeout: 10000 }
+  );
+}
+
+function stopGPSWatch() {
+  if (mapState.watchId !== null) {
+    navigator.geolocation.clearWatch(mapState.watchId);
+    mapState.watchId = null;
+  }
+}
+
+/* ============================================================
    CHOIX DE L'APPLICATION DE NAVIGATION
    Deep links vers Google Maps, Komoot, Strava, Apple Maps
    ============================================================ */
@@ -2333,6 +2521,11 @@ document.getElementById('nav-modal')?.addEventListener('click', function(e) {
    RESET
    ============================================================ */
 function resetMission() {
+  stopGPSWatch();
+  // Détruit les cartes Leaflet
+  Object.values(mapState.maps).forEach(m => m.remove());
+  mapState.maps = {}; mapState.markers = {}; mapState.routes = {};
+  mapState.watchId = null; mapState.userPos = null;
   document.querySelectorAll('audio').forEach(a=>{ a.pause(); a.currentTime=0; });
   window.speechSynthesis?.cancel();
   Object.assign(state, {address:'',lat:null,lng:null,poi1:null,poi2:null,poi3:null,startTime:null,isDemo:false,realDistanceM:null});
@@ -2402,5 +2595,6 @@ function resetMission() {
 .nav-app-desc { font-size:0.68rem; color:var(--muted); margin-top:2px; }
 </style>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 </body>
 </html>
