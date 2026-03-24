@@ -481,10 +481,10 @@ html, body { height: 100%; background: var(--bg); color: var(--on-bg); font-fami
   </div>
 
   <div class="action-grid">
-    <a id="maps-link-1" href="#" target="_blank" class="btn btn-primary" style="text-decoration:none;">
+    <button class="btn btn-primary" onclick="openNavChoice(1)">
       <span class="material-symbols-outlined">near_me</span>
       Ouvrir l'itinéraire
-    </a>
+    </button>
     <div class="action-row">
       <button class="btn btn-accent" onclick="next()">
         <span class="material-symbols-outlined" style="font-size:17px;">check_circle</span>
@@ -655,10 +655,10 @@ html, body { height: 100%; background: var(--bg); color: var(--on-bg); font-fami
   </div>
 
   <div class="action-grid">
-    <a id="maps-link-2" href="#" target="_blank" class="btn btn-primary" style="text-decoration:none;">
+    <button class="btn btn-primary" onclick="openNavChoice(2)">
       <span class="material-symbols-outlined">near_me</span>
       Ouvrir l'itinéraire
-    </a>
+    </button>
     <button class="btn btn-accent" onclick="next()">
       <span class="material-symbols-outlined" style="font-size:17px;">check_circle</span>
       Sur place — terminer
@@ -949,7 +949,7 @@ const state = {
 const BGM = {
   audio: null, ctx: null, gainNode: null, source: null, playing: false,
   FULL_VOL: 0.55,  // volume normal de fond
-  DUCK_VOL: 0.10,  // volume pendant les voix (ducking)
+  DUCK_VOL: 0.30,  // volume pendant les voix (ducking)
   FADE_MS:  800,   // durée du fondu en ms
 };
 
@@ -1002,6 +1002,29 @@ function bgmFade(targetVol, ms) {
     }, ms / steps);
   }
 }
+
+/* ============================================================
+   REPRISE MUSIQUE APRÈS RETOUR SUR LA PAGE
+   iOS coupe l'audio quand on va sur Maps — on la relance au retour
+   ============================================================ */
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && BGM.playing) {
+    // Petit délai pour laisser iOS reprendre l'audio session
+    setTimeout(() => {
+      if (BGM.ctx?.state === 'suspended') BGM.ctx.resume();
+      if (BGM.audio?.paused) {
+        BGM.audio.play().catch(() => {});
+      }
+      bgmUnduck();
+    }, 400);
+  }
+});
+
+window.addEventListener('pageshow', () => {
+  if (BGM.playing && BGM.audio?.paused) {
+    setTimeout(() => BGM.audio.play().catch(() => {}), 400);
+  }
+});
 
 /* ============================================================
    NAVIGATION
@@ -1752,6 +1775,8 @@ async function advanceMission() {
     if (progEl) progEl.style.width = pct + '%';
 
     /* POI name + maps link */
+    // Met à jour l'index pour la modale de navigation
+    _navCurrentIdx = moveNum;
     const nameEl = document.getElementById(screenId === 'screen-move1' ? 'move1-poi-name' : 'move2-poi-name');
     const linkEl = document.getElementById(screenId === 'screen-move1' ? 'maps-link-1'   : 'maps-link-2');
     if (nameEl) nameEl.textContent = poi?.tags?.name || poi?.name || '—';
@@ -1984,6 +2009,84 @@ async function completeMission() {
 }
 
 /* ============================================================
+   CHOIX DE L'APPLICATION DE NAVIGATION
+   Deep links vers Google Maps, Komoot, Strava, Apple Maps
+   ============================================================ */
+let _navCurrentIdx = 1; // index du move en cours (1 ou 2)
+
+function openNavChoice(moveIdx) {
+  _navCurrentIdx = moveIdx;
+  const modal = document.getElementById('nav-modal');
+  modal.style.display = 'flex';
+  // Animation d'entrée
+  modal.style.opacity = '0';
+  requestAnimationFrame(() => {
+    modal.style.transition = 'opacity 0.2s';
+    modal.style.opacity = '1';
+  });
+}
+
+function closeNavModal() {
+  const modal = document.getElementById('nav-modal');
+  modal.style.opacity = '0';
+  setTimeout(() => { modal.style.display = 'none'; }, 200);
+}
+
+function launchNav(app) {
+  closeNavModal();
+
+  // Récupère le POI de la course en cours
+  const poi = _navCurrentIdx === 1 ? state.poi1 :
+              _navCurrentIdx === 2 ? state.poi2 :
+              state.poi3;
+  if (!poi) return;
+  const lat = poi.lat, lon = poi.lon;
+  const name = encodeURIComponent(poi.tags?.name || 'Destination');
+
+  let url;
+  switch(app) {
+    case 'googlemaps':
+      url = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}&travelmode=walking`;
+      break;
+
+    case 'komoot':
+      // Komoot deep link : ouvre l'app ou le site avec recherche de route
+      // depuis la position actuelle vers les coordonnées
+      url = `https://www.komoot.com/plan/#map=14/${lat}/${lon}`;
+      break;
+
+    case 'strava':
+      // Strava n'a pas de deep link de navigation directe,
+      // on ouvre la carte Strava Heatmap centrée sur le point
+      url = `https://www.strava.com/maps/global-heatmap#12/${lon}/${lat}`;
+      break;
+
+    case 'apple':
+      // Apple Maps deep link (fonctionne sur iOS)
+      url = `http://maps.apple.com/?daddr=${lat},${lon}&dirflg=w`;
+      break;
+
+    default:
+      url = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}&travelmode=walking`;
+  }
+
+  window.open(url, '_blank');
+
+  // Informe l'utilisateur une seule fois que la musique reprend au retour
+  if (!sessionStorage.getItem('nav-tip-shown')) {
+    sessionStorage.setItem('nav-tip-shown', '1');
+    setTimeout(() => {
+      showToast('Musique', 'La musique reprend automatiquement quand vous revenez sur la mission.', 5000);
+    }, 800);
+  }
+}
+
+// Ferme la modale si on tape en dehors
+document.getElementById('nav-modal')?.addEventListener('click', function(e) {
+  if (e.target === this) closeNavModal();
+});
+
+/* ============================================================
    RESET
    ============================================================ */
 function resetMission() {
@@ -1999,5 +2102,82 @@ function resetMission() {
   goTo('screen-home');
 }
 </script>
+
+<!-- ── Modale choix navigation ─────────────────────────────── -->
+<div id="nav-modal" style="
+  display:none; position:fixed; inset:0; z-index:500;
+  background:rgba(8,8,8,0.88); backdrop-filter:blur(12px);
+  flex-direction:column; align-items:center; justify-content:flex-end;
+  padding-bottom:max(28px, env(safe-area-inset-bottom));">
+
+  <div style="width:100%; max-width:480px; padding:0 16px 8px;">
+    <div style="font-size:0.6rem; color:var(--muted); letter-spacing:0.25em;
+                text-transform:uppercase; text-align:center; margin-bottom:16px; font-weight:700;">
+      Ouvrir l'itinéraire dans…
+    </div>
+
+    <!-- Google Maps -->
+    <button class="nav-app-btn" id="nav-googlemaps" onclick="launchNav('googlemaps')">
+      <span style="font-size:1.4rem;">🗺</span>
+      <div>
+        <div class="nav-app-name">Google Maps</div>
+        <div class="nav-app-desc">Navigation standard, très précis</div>
+      </div>
+      <span class="material-symbols-outlined" style="margin-left:auto;color:var(--muted);font-size:18px;">open_in_new</span>
+    </button>
+
+    <!-- Komoot -->
+    <button class="nav-app-btn" id="nav-komoot" onclick="launchNav('komoot')">
+      <span style="font-size:1.4rem;">🏃</span>
+      <div>
+        <div class="nav-app-name">Komoot</div>
+        <div class="nav-app-desc">Routes running & trail recommandées</div>
+      </div>
+      <span class="material-symbols-outlined" style="margin-left:auto;color:var(--muted);font-size:18px;">open_in_new</span>
+    </button>
+
+    <!-- Strava -->
+    <button class="nav-app-btn" id="nav-strava" onclick="launchNav('strava')">
+      <span style="font-size:1.4rem;">⚡</span>
+      <div>
+        <div class="nav-app-name">Strava</div>
+        <div class="nav-app-desc">Segments populaires près de toi</div>
+      </div>
+      <span class="material-symbols-outlined" style="margin-left:auto;color:var(--muted);font-size:18px;">open_in_new</span>
+    </button>
+
+    <!-- Plans (Apple Maps) -->
+    <button class="nav-app-btn" id="nav-apple" onclick="launchNav('apple')">
+      <span style="font-size:1.4rem;">🍎</span>
+      <div>
+        <div class="nav-app-name">Plans (Apple Maps)</div>
+        <div class="nav-app-desc">Natif iOS, s'intègre avec l'Apple Watch</div>
+      </div>
+      <span class="material-symbols-outlined" style="margin-left:auto;color:var(--muted);font-size:18px;">open_in_new</span>
+    </button>
+
+    <button onclick="closeNavModal()" style="
+      width:100%; margin-top:12px; padding:16px;
+      background:var(--surface-3); border:none; cursor:pointer;
+      font-family:var(--font-body); font-size:0.72rem; font-weight:700;
+      letter-spacing:0.15em; text-transform:uppercase; color:var(--muted);">
+      Annuler
+    </button>
+  </div>
+</div>
+
+<style>
+.nav-app-btn {
+  width:100%; display:flex; align-items:center; gap:14px;
+  background:var(--surface-2); border:1px solid rgba(255,255,255,0.05);
+  padding:14px 16px; cursor:pointer; margin-bottom:8px;
+  text-align:left; transition:background 0.12s;
+}
+.nav-app-btn:hover, .nav-app-btn:active { background:var(--surface-3); }
+.nav-app-name { font-family:var(--font-head); font-weight:700; font-size:0.9rem;
+                color:var(--primary); letter-spacing:-0.01em; }
+.nav-app-desc { font-size:0.68rem; color:var(--muted); margin-top:2px; }
+</style>
+
 </body>
 </html>
