@@ -389,10 +389,7 @@ html, body { height: 100%; background: var(--bg); color: var(--on-bg); font-fami
 
     <div style="flex:1;min-height:20px;"></div>
 
-    <div class="card-accent" style="font-size:0.73rem; color:var(--muted); line-height:1.6; margin-bottom:16px;">
-      <span class="chip" style="margin-bottom:6px; display:inline-flex;">Confidentiel</span><br/>
-      Votre localisation n'est utilisée que sur votre appareil.
-    </div>
+    
 
     <button class="btn btn-primary" id="confirm-address-btn" onclick="confirmAddress()" disabled>
       <span class="material-symbols-outlined">lock</span>
@@ -722,6 +719,11 @@ html, body { height: 100%; background: var(--bg); color: var(--on-bg); font-fami
 
     <div style="height:1px;background:rgba(255,255,255,0.05);width:100%;margin:4px 0;"></div>
     <p style="font-size:0.78rem;color:var(--muted);line-height:1.7;text-align:center;max-width:290px;">Vous avez traversé la ville et récupéré l'intel. Exfiltration confirmée. Bien joué, agent.</p>
+
+    <button class="btn btn-accent" style="max-width:320px;" id="gpx-export-btn" onclick="exportGPX()" style="display:none;">
+      <span class="material-symbols-outlined">download</span>
+      Exporter la course (.gpx)
+    </button>
 
     <button class="btn btn-primary" style="max-width:320px;" onclick="resetMission()">
       <span class="material-symbols-outlined">refresh</span>
@@ -2236,20 +2238,17 @@ async function completeMission() {
   document.getElementById('end-poi').textContent  = MISSION.name || 'Mission accomplie';
   document.getElementById('end-timestamp').textContent = 'OP-COMPLETED: ' + new Date().toLocaleTimeString('fr-FR');
 
-  // Utilise la distance OSRM calculée au début de mission si disponible
-  // sinon recalcule maintenant
-  let totalM = state.realDistanceM;
+  // Priorité : distance GPS réelle enregistrée pendant la course
+  const trackedM = getTrackedDistanceM();
+  let totalM     = trackedM || state.realDistanceM;
+
   if (!totalM) {
-    if (state.poi1 && state.poi2 && state.poi3) {
-      totalM = await getRouteDistance(state.lat, state.lng, state.poi1, state.poi2, state.poi3);
-    } else {
-      // Fallback haversine × 1.25
-      const s1 = state.poi1 ? haversine(state.lat, state.lng, state.poi1.lat, state.poi1.lon) : 0;
-      const s2 = (state.poi1 && state.poi2) ? haversine(state.poi1.lat, state.poi1.lon, state.poi2.lat, state.poi2.lon) : 0;
-      const s3 = (state.poi2 && state.poi3) ? haversine(state.poi2.lat, state.poi2.lon, state.poi3.lat, state.poi3.lon) : 0;
-      const s4 = state.poi3 ? haversine(state.poi3.lat, state.poi3.lon, state.lat, state.lng) : 0;
-      totalM = (s1 + s2 + s3 + s4) * 1.25;
-    }
+    // Fallback haversine si pas de GPS
+    const s1 = state.poi1 ? haversine(state.lat, state.lng, state.poi1.lat, state.poi1.lon) : 0;
+    const s2 = (state.poi1 && state.poi2) ? haversine(state.poi1.lat, state.poi1.lon, state.poi2.lat, state.poi2.lon) : 0;
+    const s3 = (state.poi2 && state.poi3) ? haversine(state.poi2.lat, state.poi2.lon, state.poi3.lat, state.poi3.lon) : 0;
+    const s4 = state.poi3 ? haversine(state.poi3.lat, state.poi3.lon, state.lat, state.lng) : 0;
+    totalM = (s1 + s2 + s3 + s4) * 1.25;
   }
 
   const distLabel = totalM >= 1000
@@ -2258,8 +2257,9 @@ async function completeMission() {
   document.getElementById('end-dist').textContent = distLabel;
 
   const distLbl = document.getElementById('end-dist')?.closest('.end-stat')?.querySelector('.end-stat-lbl');
-  if (distLbl) distLbl.textContent = 'Distance réelle';
+  if (distLbl) distLbl.textContent = trackedM ? 'Distance parcourue' : 'Distance estimée';
 
+  updateGPXButton();
   goTo('screen-end');
 }
 
@@ -2272,10 +2272,14 @@ const mapState = {
   maps:    {},
   markers: {},
   routes:  {},
-  watchId: null,
-  userPos: null,
-  fsMap:   null,  // carte plein écran
-  fsMoveIdx: null,
+  watchId:    null,
+  userPos:    null,
+  fsMap:      null,
+  fsMoveIdx:  null,
+  currentMoveNum: null,
+  // Trace GPS complète pour la distance réelle
+  track:      [],   // [{lat, lng, t}] — tous les points enregistrés
+  trackingOn: false,
 };
 
 function getTileLayer() {
@@ -2446,21 +2450,47 @@ function startGPSWatch() {
   mapState.watchId = navigator.geolocation.watchPosition(
     (pos) => {
       const lat = pos.coords.latitude, lng = pos.coords.longitude;
+      const t   = Date.now();
+
+      // Met à jour la position courante
       mapState.userPos = { lat, lng };
+
+      // Enregistre le point dans la trace GPS
+      // Filtre : on ignore si on n'a pas bougé de plus de 5m (arrêt, bruit GPS)
+      const last = mapState.track[mapState.track.length - 1];
+      if (!last || haversine(last.lat, last.lng, lat, lng) > 5) {
+        mapState.track.push({ lat, lng, t });
+      }
+
+      // Met à jour les marqueurs sur les cartes actives
       [1, 2, 'fs'].forEach(i => {
         if (mapState.markers[i]) mapState.markers[i].setLatLng([lat, lng]);
       });
     },
     (e) => console.warn('[GPS]', e.message),
-    { enableHighAccuracy: true, maximumAge: 3000, timeout: 10000 }
+    { enableHighAccuracy: true, maximumAge: 2000, timeout: 10000 }
   );
+  mapState.trackingOn = true;
+  console.log('[GPS] Trace démarrée');
 }
 
 function stopGPSWatch() {
   if (mapState.watchId !== null) {
     navigator.geolocation.clearWatch(mapState.watchId);
     mapState.watchId = null;
+    mapState.trackingOn = false;
   }
+}
+
+// Calcule la distance totale de la trace GPS enregistrée
+function getTrackedDistanceM() {
+  const pts = mapState.track;
+  if (pts.length < 2) return null;
+  let total = 0;
+  for (let i = 1; i < pts.length; i++) {
+    total += haversine(pts[i-1].lat, pts[i-1].lng, pts[i].lat, pts[i].lng);
+  }
+  return total;
 }
 
 /* ============================================================
@@ -2546,11 +2576,79 @@ document.getElementById('nav-modal')?.addEventListener('click', function(e) {
 /* ============================================================
    RESET
    ============================================================ */
+/* ============================================================
+   EXPORT GPX
+   Génère un fichier GPX depuis la trace GPS enregistrée
+   Compatible Strava, Garmin, Komoot, AllTrails, Apple Santé
+   ============================================================ */
+function exportGPX() {
+  const track = mapState.track;
+  if (!track || track.length < 2) {
+    showToast('Export', 'Pas de trace GPS enregistrée.', 3000);
+    return;
+  }
+
+  const missionName = MISSION.name || 'Run To Escape';
+  const startTime   = new Date(track[0].t).toISOString();
+  const endTime     = new Date(track[track.length - 1].t).toISOString();
+  const distM       = getTrackedDistanceM();
+  const distKm      = distM ? (distM / 1000).toFixed(2) : '?';
+
+  // Construction du GPX
+  const trkpts = track.map(pt => {
+    const iso = new Date(pt.t).toISOString();
+    return `      <trkpt lat="${pt.lat.toFixed(7)}" lon="${pt.lng.toFixed(7)}">
+        <time>${iso}</time>
+      </trkpt>`;
+    }).join('\n'); const gpx = `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="Run To Escape"
+     xmlns="http://www.topografix.com/GPX/1/1"
+     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+     xsi:schemaLocation="http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd">
+  <metadata>
+    <name>${missionName}</name>
+    <desc>Run To Escape — Mission ${missionName} — ${distKm}km</desc>
+    <time>${startTime}</time>
+  </metadata>
+  <trk>
+    <name>${missionName}</name>
+    <type>running</type>
+    <trkseg>
+${trkpts}
+    </trkseg>
+  </trk>
+</gpx>`;
+
+  // Téléchargement
+  const blob = new Blob([gpx], { type: 'application/gpx+xml' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  const date = new Date(track[0].t);
+  const dateStr = `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
+  a.href     = url;
+  a.download = `run-to-escape-${dateStr}.gpx`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+
+  showToast('Export GPX', `${track.length} points · ${distKm}km exportés`, 4000);
+  console.log(`[GPX] Export: ${track.length} points, ${distKm}km, ${startTime} → ${endTime}`);
+}
+
+// Affiche/cache le bouton GPX selon si on a une trace
+function updateGPXButton() {
+  const btn = document.getElementById('gpx-export-btn');
+  if (!btn) return;
+  const hasTrack = mapState.track?.length >= 2;
+  btn.style.display = hasTrack ? 'flex' : 'none';
+}
+
 function resetMission() {
   stopGPSWatch();
   // Détruit les cartes Leaflet
   Object.values(mapState.maps).forEach(m => m.remove());
-  mapState.maps = {}; mapState.markers = {}; mapState.routes = {};
+  mapState.maps = {}; mapState.markers = {}; mapState.routes = {}; mapState.track = [];
   mapState.watchId = null; mapState.userPos = null;
   document.querySelectorAll('audio').forEach(a=>{ a.pause(); a.currentTime=0; });
   window.speechSynthesis?.cancel();
