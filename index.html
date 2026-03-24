@@ -1660,30 +1660,69 @@ async function getRouteDistance(lat, lng, p1, p2, p3) {
   return d1 + d2 + d3 + d4;
 }
 
+/* Calcule la route complète et extrait des waypoints intermédiaires
+   pour que Google Maps suive un itinéraire piéton sensé (évite les D648) */
+async function getRouteWithWaypoints(lat, lng, p1, p2, p3) {
+  // Route complète en un seul appel OSRM
+  const coords = [
+    `${lng},${lat}`,
+    `${p1.lon},${p1.lat}`,
+    `${p2.lon},${p2.lat}`,
+    `${p3.lon},${p3.lat}`,
+    `${lng},${lat}`   // retour au départ
+  ].join(';');
+
+  let distance = 0, waypoints = [];
+  try {
+    const ctrl = new AbortController();
+    setTimeout(() => ctrl.abort(), 8000);
+    const url = `https://router.project-osrm.org/route/v1/foot/${coords}?overview=full&geometries=geojson&steps=false`;
+    const res = await fetch(url, { signal: ctrl.signal });
+    if (res.ok) {
+      const data = await res.json();
+      const route = data.routes?.[0];
+      if (route) {
+        distance = route.distance;
+        // Extrait ~6 waypoints régulièrement espacés sur la géométrie
+        const pts = route.geometry?.coordinates || [];
+        if (pts.length > 4) {
+          const step = Math.floor(pts.length / 6);
+          for (let i = step; i < pts.length - step; i += step) {
+            waypoints.push({ lat: pts[i][1], lon: pts[i][0] });
+            if (waypoints.length >= 6) break; // Google Maps max 8 waypoints
+          }
+        }
+      }
+    }
+  } catch(e) {
+    console.warn('[OSRM route]', e.message);
+    // Fallback : distance par segments
+    distance = await getRouteDistance(lat, lng, p1, p2, p3);
+  }
+  return { distance, waypoints };
+}
+
 async function fetchAndPrepareMission() {
   const targetKm  = state.missionKm || 5;
   const targetM   = targetKm * 1000;
-  const segTarget = targetM / 4; // distance cible par segment (mètres route)
+  const segTarget = targetM / 4;
 
-  showLoading('Recherche des points d\'intérêt…');
+  showLoading('Recherche des points d’intérêt…');
   let demo = false;
 
-  /* ── 1. UN SEUL appel réseau — rayon large pour couvrir toute la boucle ── */
-  const searchRadius = Math.round(segTarget * 1.8); // large pour avoir des candidats dans tous les secteurs
+  /* ── 1. Fetch POIs — rayon généreux ── */
+  const searchRadius = Math.round(segTarget * 2.2);
   let allPOIs = [];
   try {
     const timeout = new Promise((_, r) => setTimeout(() => r(new Error('Timeout')), 15000));
-    allPOIs = await Promise.race([
-      fetchPOIs(state.lat, state.lng, 0, searchRadius),
-      timeout
-    ]);
+    allPOIs = await Promise.race([fetchPOIs(state.lat, state.lng, 0, searchRadius), timeout]);
     console.log(`[Mission] ${allPOIs.length} POIs bruts (rayon ${searchRadius}m)`);
   } catch(e) {
     console.warn('[Mission] Réseau KO:', e.message);
     demo = true;
   }
 
-  /* ── 2. Dédoublonnage par coordonnées ── */
+  /* ── 2. Dédoublonnage ── */
   const seen = new Set();
   const unique = (demo ? demoPOIs(state.lat, state.lng, 0, 9999) : allPOIs).filter(p => {
     if (!p.tags?.name || p.lat == null) return false;
@@ -1694,49 +1733,49 @@ async function fetchAndPrepareMission() {
   });
   console.log(`[Mission] ${unique.length} POIs uniques`);
 
-  /* ── 3. Calcul distances OSRM en une seule vague ──────────────────
-     On mesure la distance depuis le DÉPART pour tous les candidats en parallèle.
-     Nominatim n'est appelé qu'une fois — OSRM est moins strict sur le rate-limit.
-  ── */
+  /* ── 3. Distances OSRM ── */
   showLoading('Calcul des distances…');
   let scored = [];
   if (unique.length > 0) {
-    const batch = unique.slice(0, 8); // max 8 appels OSRM pour éviter le rate-limit
-    const dists = await Promise.all(
-      batch.map(p => getRealDistance(state.lat, state.lng, p.lat, p.lon))
-    );
+    const batch = unique.slice(0, 10);
+    const dists = await Promise.all(batch.map(p => getRealDistance(state.lat, state.lng, p.lat, p.lon)));
     scored = batch.map((p, i) => ({
-      p,
-      d: dists[i],
-      // Angle depuis le départ, normalisé [0, 2π]
+      p, d: dists[i],
       bearing: (Math.atan2(p.lon - state.lng, p.lat - state.lat) + Math.PI * 2) % (Math.PI * 2)
     }));
-    console.log(`[OSRM] ${scored.length} distances calculées`);
+
+    // ── FILTRE PLUS PERMISSIF : accepte entre 20% et 250% de segTarget ──
+    // Avant : 0.4–1.7 → rejetait trop de POIs valides
+    // Maintenant : on garde tout, on trie par proximité, mode démo seulement si vraiment vide
+    const inRange = scored.filter(({ d }) => d >= segTarget * 0.2 && d <= segTarget * 2.5);
+    console.log(`[OSRM] ${scored.length} distances calc. | ${inRange.length} dans la fourchette (±250%)`);
+    if (inRange.length > 0) scored = inRange;
+    // sinon on garde tout scored pour ne pas tomber en mode démo inutilement
   }
 
-  /* ── 4. Boucle en 3 secteurs de 120° ─────────────────────────────
-     Angle de départ aléatoire → boucle différente à chaque mission.
-     Chaque secteur couvre 120°. On cherche dans chaque secteur le POI
-     dont la distance est la plus proche de segTarget.
-  ── */
+  /* ── 4. Boucle en 3 secteurs de 120° ── */
   const TWO_PI = Math.PI * 2;
   const startAngle = Math.random() * TWO_PI;
 
-  function sectorContains(bearing, sectorStart, sectorEnd) {
-    const s = (sectorStart + TWO_PI) % TWO_PI;
-    const e = (sectorEnd   + TWO_PI) % TWO_PI;
-    if (s <= e) return bearing >= s && bearing <= e;
-    return bearing >= s || bearing <= e; // wrap autour de 0/2π
+  function sectorContains(b, s, e) {
+    const ns = (s + TWO_PI) % TWO_PI, ne = (e + TWO_PI) % TWO_PI;
+    if (ns <= ne) return b >= ns && b <= ne;
+    return b >= ns || b <= ne;
   }
 
   function bestInSector(sStart, sEnd, exclude) {
-    return scored
-      .filter(({ p, d, bearing }) => {
-        if (exclude.has(`${p.lat.toFixed(3)},${p.lon.toFixed(3)}`)) return false;
-        if (!sectorContains(bearing, sStart, sEnd)) return false;
-        return d >= segTarget * 0.4 && d <= segTarget * 1.7;
-      })
-      .sort((a, b) => Math.abs(a.d - segTarget) - Math.abs(b.d - segTarget));
+    const candidates = scored.filter(({ p, bearing }) => {
+      if (exclude.has(`${p.lat.toFixed(3)},${p.lon.toFixed(3)}`)) return false;
+      return sectorContains(bearing, sStart, sEnd);
+    }).sort((a, b) => Math.abs(a.d - segTarget) - Math.abs(b.d - segTarget));
+
+    // Si aucun dans le secteur strict → prend le plus proche globalement (hors exclusions)
+    if (candidates.length === 0) {
+      return scored
+        .filter(({ p }) => !exclude.has(`${p.lat.toFixed(3)},${p.lon.toFixed(3)}`))
+        .sort((a, b) => Math.abs(a.d - segTarget) - Math.abs(b.d - segTarget));
+    }
+    return candidates;
   }
 
   const usedKeys = new Set();
@@ -1747,7 +1786,7 @@ async function fetchAndPrepareMission() {
       usedKeys.add(`${chosen.p.lat.toFixed(3)},${chosen.p.lon.toFixed(3)}`);
       return chosen.p;
     }
-    // Fallback fictif dans le bon secteur
+    // Vraiment rien → point fictif calibré
     demo = true;
     const d = segTarget / 1.25 / 111000;
     const p = {
@@ -1760,11 +1799,8 @@ async function fetchAndPrepareMission() {
     return p;
   }
 
-  // Secteur 1 : startAngle → startAngle+120°
-  const s1start = startAngle,              s1end = (startAngle + TWO_PI/3)   % TWO_PI;
-  // Secteur 2 : startAngle+120° → startAngle+240°
+  const s1start = startAngle,                       s1end = (startAngle + TWO_PI/3)     % TWO_PI;
   const s2start = (startAngle + TWO_PI/3)   % TWO_PI, s2end = (startAngle + TWO_PI*2/3) % TWO_PI;
-  // Secteur 3 : startAngle+240° → startAngle+360° (orienté retour)
   const s3start = (startAngle + TWO_PI*2/3) % TWO_PI, s3end = startAngle;
 
   showLoading('Construction de la boucle…');
@@ -1773,21 +1809,24 @@ async function fetchAndPrepareMission() {
   state.poi3 = pickAndMark(bestInSector(s3start, s3end, usedKeys), startAngle + Math.PI*5/3);
 
   console.log(`[Mission] poi1="${state.poi1.tags.name}" | poi2="${state.poi2.tags.name}" | poi3="${state.poi3.tags.name}"`);
-  console.log(`[Mission] Secteurs: ${Math.round(s1start*180/Math.PI)}°-${Math.round(s1end*180/Math.PI)}° | ${Math.round(s2start*180/Math.PI)}°-${Math.round(s2end*180/Math.PI)}° | ${Math.round(s3start*180/Math.PI)}°-${Math.round(s3end*180/Math.PI)}°`);
 
-  /* ── 5. Distance réelle totale (arrière-plan) ── */
+  /* ── 5. Distance réelle + waypoints OSRM pour Maps ── */
   state.realDistanceM = null;
-  getRouteDistance(state.lat, state.lng, state.poi1, state.poi2, state.poi3)
-    .then(d => {
-      state.realDistanceM = d;
-      console.log(`[OSRM] Distance totale: ${(d/1000).toFixed(2)}km (cible: ${targetKm}km)`);
+  state.waypointsOSRM = null;
+
+  // Calcule distance totale ET récupère les waypoints pour éviter les routes non courables
+  getRouteWithWaypoints(state.lat, state.lng, state.poi1, state.poi2, state.poi3)
+    .then(({ distance, waypoints }) => {
+      state.realDistanceM  = distance;
+      state.waypointsOSRM  = waypoints;
+      console.log(`[OSRM] Total: ${(distance/1000).toFixed(2)}km | ${waypoints.length} waypoints`);
     });
 
   state.isDemo = demo;
   hideLoading();
   if (demo) {
     document.getElementById('demo-badge').classList.add('show');
-    showToast('Mode démo', 'POIs fictifs activés — zone peu dense.', 4000);
+    showToast('Mode démo', 'Zone peu dense — points générés automatiquement.', 4000);
   }
   populateBriefing();
   goTo('screen-briefing');
@@ -2179,8 +2218,30 @@ function launchNav(app) {
       url = `http://maps.apple.com/?daddr=${lat},${lon}&dirflg=w`;
       break;
     case 'googlemaps':
-    default:
-      url = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}&travelmode=walking`;
+    default: {
+      // Ajoute des waypoints OSRM si disponibles pour guider sur chemins piétons
+      // (évite les départementales)
+      const wps = state.waypointsOSRM;
+      if (wps && wps.length > 0) {
+        // Google Maps accepte max 8 waypoints via le paramètre "waypoints"
+        // On prend 2-3 waypoints autour du POI courant
+        const moveIdx = _navCurrentIdx;
+        // Trouve les waypoints correspondant au segment en cours
+        const totalWps = wps.length;
+        const segSize  = Math.floor(totalWps / 4);
+        const segStart = (moveIdx - 1) * segSize;
+        const segEnd   = Math.min(segStart + segSize, totalWps);
+        const segWps   = wps.slice(segStart, segEnd).slice(0, 3); // max 3 pour ce segment
+        if (segWps.length > 0) {
+          const waypointStr = segWps.map(w => `${w.lat},${w.lon}`).join('|');
+          url = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}&travelmode=walking&waypoints=${encodeURIComponent(waypointStr)}`;
+        } else {
+          url = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}&travelmode=walking`;
+        }
+      } else {
+        url = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}&travelmode=walking`;
+      }
+    }
   }
 
   window.open(url, '_blank');
