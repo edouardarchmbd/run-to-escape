@@ -1779,14 +1779,19 @@ async function fetchAndPrepareMission() {
   }
 
   const usedKeys = new Set();
+
   function pickAndMark(candidates, fallbackAngle) {
-    const top = candidates.slice(0, 3);
+    // Filtre les candidats déjà utilisés
+    const available = candidates.filter(
+      ({ p }) => !usedKeys.has(`${p.lat.toFixed(3)},${p.lon.toFixed(3)}`)
+    );
+    const top = available.slice(0, 3);
     if (top.length > 0) {
       const chosen = top[Math.floor(Math.random() * top.length)];
       usedKeys.add(`${chosen.p.lat.toFixed(3)},${chosen.p.lon.toFixed(3)}`);
       return chosen.p;
     }
-    // Vraiment rien → point fictif calibré
+    // Vraiment rien → point fictif calibré dans la bonne direction
     demo = true;
     const d = segTarget / 1.25 / 111000;
     const p = {
@@ -1808,7 +1813,18 @@ async function fetchAndPrepareMission() {
   state.poi2 = pickAndMark(bestInSector(s2start, s2end, usedKeys), startAngle + Math.PI);
   state.poi3 = pickAndMark(bestInSector(s3start, s3end, usedKeys), startAngle + Math.PI*5/3);
 
-  console.log(`[Mission] poi1="${state.poi1.tags.name}" | poi2="${state.poi2.tags.name}" | poi3="${state.poi3.tags.name}"`);
+  // ── Logs détaillés pour diagnostic ──
+  const fmt = p => `"${p.tags.name}" (${p.lat?.toFixed(5)}, ${p.lon?.toFixed(5)}) ${p._fictional ? '[FICTIF]' : ''}`;
+  console.log('[Mission] poi1 →', fmt(state.poi1));
+  console.log('[Mission] poi2 →', fmt(state.poi2));
+  console.log('[Mission] poi3 →', fmt(state.poi3));
+  console.log('[Mission] départ →', `(${state.lat?.toFixed(5)}, ${state.lng?.toFixed(5)})`);
+
+  // Détecte si deux POIs ont les mêmes coordonnées
+  const coords = [state.poi1, state.poi2, state.poi3].map(p => `${p.lat?.toFixed(3)},${p.lon?.toFixed(3)}`);
+  const dupes = coords.filter((c, i) => coords.indexOf(c) !== i);
+  if (dupes.length) console.warn('[Mission] ⚠ POIs en double détectés :', dupes);
+  else console.log('[Mission] ✓ Tous les POIs sont distincts');
 
   /* ── 5. Distance réelle + waypoints OSRM pour Maps ── */
   state.realDistanceM = null;
@@ -2119,24 +2135,56 @@ function answerPuzzle(btn, correct) {
    NOUVEAU POI
    ============================================================ */
 async function newPOI() {
-  showLoading('Recalcul...');
+  // Garde un flag pour éviter les appels en boucle
+  if (state._newPOIRunning) return;
+  state._newPOIRunning = true;
+
+  showLoading('Nouveau point…');
   try {
-    let pois = state.isDemo
-      ? DEMO_POIS.filter(p => p.tags.name !== state.poi1?.tags.name)
-      : (await fetchPOIs(state.lat, state.lng, 400, 900)).filter(p => p.tags.name !== state.poi1?.tags.name);
+    // Récupère le step courant pour savoir quel POI changer
+    const cur   = state.screenQueue?.[state.screenIndex];
+    const mNum  = cur?.moveNum || 1; // 1, 2 ou 3
+
+    let pois = await fetchPOIs(state.lat, state.lng, 0, Math.round((state.missionKm || 5) * 250));
+
+    // Exclut les POIs déjà utilisés
+    const used = new Set([
+      state.poi1 && `${state.poi1.lat?.toFixed(3)},${state.poi1.lon?.toFixed(3)}`,
+      state.poi2 && `${state.poi2.lat?.toFixed(3)},${state.poi2.lon?.toFixed(3)}`,
+      state.poi3 && `${state.poi3.lat?.toFixed(3)},${state.poi3.lon?.toFixed(3)}`,
+    ]);
+    // Exclut le POI du move courant (celui qu'on veut changer)
+    const curPOI = mNum === 1 ? state.poi1 : mNum === 2 ? state.poi2 : state.poi3;
+    if (curPOI) used.delete(`${curPOI.lat?.toFixed(3)},${curPOI.lon?.toFixed(3)}`);
+
+    pois = pois.filter(p => !used.has(`${p.lat?.toFixed(3)},${p.lon?.toFixed(3)}`));
+
     if (pois.length) {
-      state.poi1 = pick(pois);
-      // Update current move step's resolved POI
-      const cur = state.screenQueue?.[state.screenIndex];
-      if (cur?.step) cur.step._resolvedPOI = state.poi1;
-      document.getElementById('move1-poi-name').textContent = state.poi1.tags.name;
-      document.getElementById('maps-link-1').href           = mapsLink(state.poi1.lat, state.poi1.lon);
-      showToast('Nouveau point', state.poi1.tags.name);
+      const newPoi = pick(pois);
+      // Met à jour le bon POI dans le state
+      if (mNum === 1) state.poi1 = newPoi;
+      else if (mNum === 2) state.poi2 = newPoi;
+      else state.poi3 = newPoi;
+
+      // Met à jour le step résolu
+      if (cur?.step) cur.step._resolvedPOI = newPoi;
+
+      // Met à jour l'affichage — nom du POI dans l'écran actif
+      const nameEl = document.getElementById(
+        mNum === 1 ? 'move1-poi-name' : 'move2-poi-name'
+      );
+      if (nameEl) nameEl.textContent = newPoi.tags.name;
+
+      showToast('Nouveau point', newPoi.tags.name);
     } else {
-      showToast('Aucun POI', "Pas d'autre point disponible.");
+      showToast('Aucun autre point', "Pas d'autre lieu disponible dans cette zone.");
     }
-  } catch(e) { showToast('Erreur', e.message); }
+  } catch(e) {
+    showToast('Erreur', e.message);
+  }
+
   hideLoading();
+  state._newPOIRunning = false;
 }
 
 /* ============================================================
