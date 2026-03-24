@@ -2004,6 +2004,12 @@ async function advanceMission() {
       const ttl = document.getElementById(`audio${audioIdx}-title`);
       if (lbl) lbl.textContent = step.audio.label || 'Incoming Intel';
       if (ttl) ttl.textContent = step.audio.title || 'Briefing';
+
+      // Autoplay — petit délai pour laisser l'écran s'afficher
+      setTimeout(() => {
+        const el = document.getElementById(`audio-el-${audioIdx}`);
+        if (el) playAudioEl(el);
+      }, 600);
     }
   }
 
