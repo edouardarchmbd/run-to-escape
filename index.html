@@ -314,17 +314,97 @@ html, body { height: 100%; background: var(--bg); color: var(--on-bg); font-fami
     <div class="section-tag">Zone d'opération</div>
     <h2 class="display address-title">Votre position</h2>
 
-    <div class="input-wrap">
+    <div class="input-wrap" style="position:relative;">
       <span class="material-symbols-outlined input-icon">location_on</span>
       <input class="input-field" id="address-input" type="text"
              placeholder="Saisir l'adresse de déploiement..."
              autocomplete="off" oninput="onAddressInput(this.value)"/>
+      <!-- Dropdown collé sous le champ, z-index élevé pour passer au-dessus du slider -->
+      <div id="address-suggestions"
+           style="position:absolute; top:100%; left:0; right:0; z-index:999;
+                  background:var(--surface-2); max-height:240px; overflow-y:auto;
+                  border-top:1px solid rgba(255,255,255,0.05); box-shadow:0 8px 24px rgba(0,0,0,0.6);">
+      </div>
     </div>
-    <div id="address-suggestions"></div>
+
 
     <p class="address-help">
       Entrez une adresse complète. Nous localisons automatiquement les points d'intérêt autour de vous dans un rayon de 500–2000 m.
     </p>
+
+    <!-- ── SLIDER DISTANCE DE MISSION ─────────────────────── -->
+    <div id="distance-slider-block" style="margin-top:24px; padding:20px; background:var(--surface-2);">
+
+      <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:12px;">
+        <div>
+          <div class="section-tag" style="margin-bottom:2px;">Intensité de la mission</div>
+          <div style="font-family:var(--font-head); font-size:1.6rem; font-weight:800; color:var(--primary); letter-spacing:-0.02em; line-height:1;">
+            <span id="slider-km-display">5</span>
+            <span style="font-size:0.8rem; font-weight:600; color:var(--muted); letter-spacing:0.05em;"> km</span>
+          </div>
+        </div>
+        <div style="text-align:right;">
+          <div style="font-size:0.58rem; color:var(--muted); letter-spacing:0.15em; text-transform:uppercase; margin-bottom:2px;">Durée estimée</div>
+          <div style="font-size:0.85rem; font-family:var(--font-head); font-weight:700; color:var(--accent);" id="slider-time-display">~50 min</div>
+        </div>
+      </div>
+
+      <!-- Slider custom dans le style de la mission -->
+      <div style="position:relative; padding:8px 0;">
+        <input
+          type="range"
+          id="mission-distance-slider"
+          min="3" max="12" step="0.5" value="5"
+          oninput="onSliderChange(this.value)"
+          style="width:100%; appearance:none; -webkit-appearance:none; height:2px; background:transparent; outline:none; cursor:pointer;"
+        />
+        <!-- Track custom -->
+        <div style="position:absolute; top:50%; left:0; right:0; height:2px; transform:translateY(-50%); pointer-events:none; z-index:0;">
+          <div id="slider-track-fill" style="height:100%; background:var(--accent); width:18.2%;"></div>
+          <!-- Track vide -->
+          <div style="position:absolute; top:0; left:0; right:0; height:100%; background:var(--surface-3); z-index:-1;"></div>
+        </div>
+      </div>
+
+      <!-- Labels min/max -->
+      <div style="display:flex; justify-content:space-between; margin-top:6px;">
+        <span style="font-size:0.58rem; color:var(--muted); letter-spacing:0.15em; text-transform:uppercase;">3 km — Sprint</span>
+        <span style="font-size:0.58rem; color:var(--muted); letter-spacing:0.15em; text-transform:uppercase;">12 km — Élite</span>
+      </div>
+
+      <!-- Niveau label -->
+      <div style="margin-top:14px; display:flex; align-items:center; gap:8px;">
+        <div id="level-chip" class="chip" style="color:var(--accent);">AGENT</div>
+        <span id="level-desc" style="font-size:0.7rem; color:var(--muted);">Missions courtes, idéal pour débuter.</span>
+      </div>
+    </div>
+
+    <!-- Style du slider natif (thumb) -->
+    <style>
+      #mission-distance-slider::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        width: 20px; height: 20px;
+        background: var(--accent);
+        border: 2px solid var(--bg);
+        border-radius: 50%;
+        cursor: pointer;
+        position: relative; z-index: 2;
+        box-shadow: 0 0 0 3px rgba(141,166,190,0.15);
+        transition: box-shadow 0.15s;
+      }
+      #mission-distance-slider::-webkit-slider-thumb:active {
+        box-shadow: 0 0 0 6px rgba(141,166,190,0.2);
+      }
+      #mission-distance-slider::-moz-range-thumb {
+        width: 20px; height: 20px;
+        background: var(--accent);
+        border: 2px solid var(--bg);
+        border-radius: 50%;
+        cursor: pointer;
+      }
+      #mission-distance-slider::-webkit-slider-runnable-track { background: transparent; }
+      #mission-distance-slider::-moz-range-track { background: transparent; }
+    </style>
 
     <div style="flex:1;min-height:20px;"></div>
 
@@ -997,12 +1077,161 @@ function bindAudioUI(idx) {
 }
 
 /* ============================================================
+   SLIDER DE DISTANCE
+   Règle un facteur qui scale les rayons min/max de chaque course
+   ============================================================ */
+
+// Niveaux associés à chaque distance
+const DISTANCE_LEVELS = [
+  { min: 3,   max: 4,   label: 'RECRUE',   desc: 'Missions courtes, idéal pour débuter.',         color: 'var(--accent)' },
+  { min: 4,   max: 6,   label: 'AGENT',    desc: 'Format standard. 45-60 minutes.',                color: 'var(--accent)' },
+  { min: 6,   max: 8,   label: 'OFFICIER', desc: 'Terrain élargi. Bonne condition requise.',       color: '#a0c8a0' },
+  { min: 8,   max: 10,  label: 'VÉTÉRAN', desc: "Mission longue. Prévoyez de l’eau.",            color: '#c8a050' },
+  { min: 10,  max: 13,  label: 'ÉLITE',    desc: 'Opération extrême. Réservé aux agents aguerris.', color: '#c05050' },
+];
+
+function getLevel(km) {
+  return DISTANCE_LEVELS.find(l => km >= l.min && km < l.max) || DISTANCE_LEVELS[DISTANCE_LEVELS.length - 1];
+}
+
+// Convertit km total cible → rayon de recherche
+// Distance totale = 4 segments (départ→1→2→3→départ)
+// Rayon = distance par segment (km/4), avec marge ±30%
+function kmToSearchRadius(km) {
+  const segM = (km * 1000) / 4;  // mètres par segment
+  return {
+    rMin: Math.round(segM * 0.5), // au moins la moitié du segment
+    rMax: Math.round(segM * 1.3), // au plus 30% de marge au dessus
+  };
+}
+function kmToRadii(km) { return kmToSearchRadius(km); }
+
+/* ── OSRM — distance réelle à pied ────────────────────────────────
+   API publique, gratuite, pas de clé, CORS ok.
+   Endpoint : /route/v1/foot/{lon1},{lat1};{lon2},{lat2}
+   ──────────────────────────────────────────────────────────────── */
+async function getRealDistance(lat1, lon1, lat2, lon2) {
+  try {
+    const url = `https://router.project-osrm.org/route/v1/foot/${lon1},${lat1};${lon2},${lat2}?overview=false`;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 5000);
+    let res;
+    try { res = await fetch(url, { signal: ctrl.signal }); }
+    finally { clearTimeout(timer); }
+    if (!res.ok) throw new Error('OSRM HTTP ' + res.status);
+    const data = await res.json();
+    if (data.routes?.[0]?.distance) return data.routes[0].distance; // mètres
+  } catch(e) {
+    console.warn('[OSRM]', e.message);
+  }
+  // Fallback : haversine × 1.25 (coefficient conservateur)
+  return haversine(lat1, lon1, lat2, lon2) * 1.25;
+}
+
+/* Calcule la distance totale réelle d'un itinéraire départ→p1→p2→p3→départ */
+async function getRouteDistance(lat, lng, p1, p2, p3) {
+  const [d1, d2, d3, d4] = await Promise.all([
+    getRealDistance(lat, lng, p1.lat, p1.lon),
+    getRealDistance(p1.lat, p1.lon, p2.lat, p2.lon),
+    getRealDistance(p2.lat, p2.lon, p3.lat, p3.lon),
+    getRealDistance(p3.lat, p3.lon, lat, lng),
+  ]);
+  return d1 + d2 + d3 + d4; // mètres
+}
+
+state.missionKm = 5; // valeur par défaut
+
+function onSliderChange(val) {
+  const km = parseFloat(val);
+  state.missionKm = km;
+
+  // Affichage km
+  document.getElementById('slider-km-display').textContent = km % 1 === 0 ? km : km.toFixed(1);
+
+  // Durée estimée (running ~6min/km, marche ~12min/km → moyenne ~9min/km)
+  const minTotal = Math.round(km * 9);
+  const h = Math.floor(minTotal / 60);
+  const m = minTotal % 60;
+  document.getElementById('slider-time-display').textContent =
+    h > 0 ? `~${h}h${m > 0 ? m : ''}` : `~${minTotal} min`;
+
+  // Track fill
+  const pct = ((km - 3) / (12 - 3)) * 100;
+  document.getElementById('slider-track-fill').style.width = pct + '%';
+
+  // Niveau
+  const level = getLevel(km);
+  const chip = document.getElementById('level-chip');
+  const desc = document.getElementById('level-desc');
+  chip.textContent = level.label;
+  chip.style.color  = level.color;
+  chip.style.background = level.color.replace(')', ', 0.12)').replace('var(', 'rgba(').replace('var(--accent)', 'rgba(141,166,190,0.12)').replace('rgba(rgba(', 'rgba(');
+  // Simpler approach for chip background
+  chip.style.background = '';
+  chip.style.opacity = '1';
+  if (desc) desc.textContent = level.desc;
+}
+
+// Init au chargement
+document.addEventListener('DOMContentLoaded', () => onSliderChange(5));
+
+/* ============================================================
    GÉOCODAGE Nominatim
    ============================================================ */
 let debounceTimer;
 async function geocodeAddress(q) {
-  const r = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}&limit=5`, { headers: { 'Accept-Language': 'fr' } });
-  return r.json();
+  // Essaie plusieurs endpoints en parallèle — le premier qui répond gagne
+  const photonUrl = `https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=5&lang=fr`;
+  const nominatimProxy = `https://corsproxy.io/?${encodeURIComponent(
+    'https://nominatim.openstreetmap.org/search?format=json&limit=5&q=' + encodeURIComponent(q)
+  )}`;
+  const nominatimProxy2 = `https://api.allorigins.win/raw?url=${encodeURIComponent(
+    'https://nominatim.openstreetmap.org/search?format=json&limit=5&q=' + encodeURIComponent(q)
+  )}`;
+
+  // Timeout de 6s par requête
+  function fetchWithTimeout(url, ms) {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), ms);
+    return fetch(url, { signal: ctrl.signal })
+      .finally(() => clearTimeout(t));
+  }
+
+  // Tentative Photon
+  try {
+    const r = await fetchWithTimeout(photonUrl, 6000);
+    if (r.ok) {
+      const data = await r.json();
+      const results = (data.features || []).map(f => ({
+        display_name: [f.properties.name, f.properties.street, f.properties.city,
+                        f.properties.postcode, f.properties.country].filter(Boolean).join(', '),
+        lat: f.geometry.coordinates[1],
+        lon: f.geometry.coordinates[0],
+        osm_id: f.properties.osm_id
+      })).filter(r => r.lat && r.lon);
+      if (results.length) return results;
+    }
+  } catch(e) { console.warn('[Photon]', e.message); }
+
+  // Tentative Nominatim via corsproxy.io
+  try {
+    const r = await fetchWithTimeout(nominatimProxy, 6000);
+    if (r.ok) {
+      const data = await r.json();
+      if (Array.isArray(data) && data.length) return data;
+    }
+  } catch(e) { console.warn('[corsproxy]', e.message); }
+
+  // Tentative Nominatim via allorigins
+  try {
+    const r = await fetchWithTimeout(nominatimProxy2, 6000);
+    if (r.ok) {
+      const data = await r.json();
+      if (Array.isArray(data) && data.length) return data;
+    }
+  } catch(e) { console.warn('[allorigins]', e.message); }
+
+  throw new Error('Géocodage inaccessible (3 services essayés)');
 }
 
 function onAddressInput(v) {
@@ -1012,8 +1241,14 @@ function onAddressInput(v) {
   clearTimeout(debounceTimer);
   if (v.length < 3) { document.getElementById('address-suggestions').innerHTML = ''; return; }
   debounceTimer = setTimeout(async () => {
-    try { renderSuggestions(await geocodeAddress(v)); } catch(e){}
-  }, 420);
+    try {
+      const results = await geocodeAddress(v);
+      renderSuggestions(results);
+    } catch(e) {
+      console.warn('[Géocodage]', e.message);
+      // N'affiche pas d'erreur à l'utilisateur pendant la frappe — silencieux
+    }
+  }, 600); // 600ms debounce — réduit les appels API
 }
 
 function renderSuggestions(results) {
@@ -1110,7 +1345,11 @@ async function fetchPOIsNominatim(lat, lng, radiusM) {
       fetch(
         `https://nominatim.openstreetmap.org/search?format=json&limit=8` +
         `&q=${encodeURIComponent(type)}&viewbox=${viewbox}&bounded=1`,
-        { headers: { 'Accept-Language': 'fr' } }
+        { headers: {
+            'Accept-Language': 'fr',
+            'User-Agent': 'RunToEscape/1.0 (https://edouardarchmbd.github.io/run-to-escape/)',
+            'Referer': 'https://edouardarchmbd.github.io/'
+        }}
       ).then(r => r.ok ? r.json() : []).catch(() => [])
     )
   );
@@ -1260,123 +1499,133 @@ function generateFictionalPOI(lat, lng, excludePOI) {
 }
 
 async function fetchAndPrepareMission() {
-  showLoading('Recherche des points d\'intérêt…');
-  let allPOIs = [], demo = false;
+  const targetKm  = state.missionKm || 5;
+  const targetM   = targetKm * 1000;
+  const segTarget = targetM / 4; // distance cible par segment (mètres route)
 
+  showLoading('Recherche des points d\'intérêt…');
+  let demo = false;
+
+  /* ── 1. UN SEUL appel réseau — rayon large pour couvrir toute la boucle ── */
+  const searchRadius = Math.round(segTarget * 1.8); // large pour avoir des candidats dans tous les secteurs
+  let allPOIs = [];
   try {
-    const globalTimeout = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error('Timeout 15s')), 15000)
-    );
-    allPOIs = await Promise.race([fetchPOIs(state.lat, state.lng, 0, 1800), globalTimeout]);
-    console.log(`[Mission] ${allPOIs.length} POIs bruts`);
+    const timeout = new Promise((_, r) => setTimeout(() => r(new Error('Timeout')), 15000));
+    allPOIs = await Promise.race([
+      fetchPOIs(state.lat, state.lng, 0, searchRadius),
+      timeout
+    ]);
+    console.log(`[Mission] ${allPOIs.length} POIs bruts (rayon ${searchRadius}m)`);
   } catch(e) {
-    console.warn('[Mission] Echec réseau:', e.message);
+    console.warn('[Mission] Réseau KO:', e.message);
     demo = true;
   }
 
-  const pool = demo ? demoPOIs(state.lat, state.lng, 0, 9999) : allPOIs;
-
-  // ── Quadrants autour du départ ──────────────────────────────
-  // On divise la boussole en 4 quadrants (NE, NW, SE, SW)
-  // poi1 et poi2 seront TOUJOURS dans des quadrants opposés
-  function getQuadrant(p) {
-    const dLat = p.lat - state.lat;
-    const dLon = p.lon - state.lng;
-    if (dLat >= 0 && dLon >= 0) return 'NE';
-    if (dLat >= 0 && dLon <  0) return 'NW';
-    if (dLat <  0 && dLon >= 0) return 'SE';
-    return 'SW';
-  }
-
-  const OPPOSITES = { NE: 'SW', SW: 'NE', NW: 'SE', SE: 'NW' };
-
-  // Dédoublonnage par coordonnées (~55m)
+  /* ── 2. Dédoublonnage par coordonnées ── */
   const seen = new Set();
-  const unique = pool.filter(p => {
+  const unique = (demo ? demoPOIs(state.lat, state.lng, 0, 9999) : allPOIs).filter(p => {
     if (!p.tags?.name || p.lat == null) return false;
     const key = `${p.lat.toFixed(3)},${p.lon.toFixed(3)}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
-  }).filter(p => {
-    const d = haversine(state.lat, state.lng, p.lat, p.lon);
-    return d >= 300 && d <= 1500;
   });
+  console.log(`[Mission] ${unique.length} POIs uniques`);
 
-  console.log(`[Mission] ${unique.length} POIs uniques dans 300-1500m`);
-
-  // ── Sélection poi1 — quadrant aléatoire ────────────────────
-  // Choisit un quadrant de départ au hasard parmi ceux qui ont des POIs
-  const byQuadrant = { NE: [], NW: [], SE: [], SW: [] };
-  unique.forEach(p => byQuadrant[getQuadrant(p)].push(p));
-
-  const quadrantsWithPOIs = Object.entries(byQuadrant)
-    .filter(([, pois]) => pois.length > 0)
-    .map(([q]) => q);
-
-  let q1, q2;
-  if (quadrantsWithPOIs.length >= 2) {
-    // Préfère des quadrants opposés si possible
-    const pairs = [['NE','SW'],['NW','SE']];
-    const validPair = pairs.find(([a, b]) =>
-      byQuadrant[a].length > 0 && byQuadrant[b].length > 0
+  /* ── 3. Calcul distances OSRM en une seule vague ──────────────────
+     On mesure la distance depuis le DÉPART pour tous les candidats en parallèle.
+     Nominatim n'est appelé qu'une fois — OSRM est moins strict sur le rate-limit.
+  ── */
+  showLoading('Calcul des distances…');
+  let scored = [];
+  if (unique.length > 0) {
+    const batch = unique.slice(0, 15); // max 15 appels OSRM en parallèle
+    const dists = await Promise.all(
+      batch.map(p => getRealDistance(state.lat, state.lng, p.lat, p.lon))
     );
-    if (validPair) {
-      [q1, q2] = validPair;
-    } else {
-      // Prend deux quadrants différents quelconques
-      q1 = quadrantsWithPOIs[0];
-      q2 = quadrantsWithPOIs.find(q => q !== q1) || q1;
-    }
-    state.poi1 = pick(byQuadrant[q1]);
-    state.poi2 = pick(byQuadrant[q2]);
-  } else if (quadrantsWithPOIs.length === 1) {
-    // Un seul quadrant avec POIs — poi1 réel, poi2 fictif dans le quadrant opposé
-    q1 = quadrantsWithPOIs[0];
-    state.poi1 = pick(byQuadrant[q1]);
-    state.poi2 = generateFictionalPOI(state.lat, state.lng, state.poi1);
-  } else {
-    // Aucun POI — deux points fictifs dans des directions opposées
-    state.poi1 = generateFictionalPOI(state.lat, state.lng,
-      { lat: state.lat + 0.005, lon: state.lng + 0.005 });
-    state.poi2 = generateFictionalPOI(state.lat, state.lng, state.poi1);
+    scored = batch.map((p, i) => ({
+      p,
+      d: dists[i],
+      // Angle depuis le départ, normalisé [0, 2π]
+      bearing: (Math.atan2(p.lon - state.lng, p.lat - state.lat) + Math.PI * 2) % (Math.PI * 2)
+    }));
+    console.log(`[OSRM] ${scored.length} distances calculées`);
   }
 
-  // ── Sélection poi3 : troisième quadrant différent de poi1 et poi2 ──
-  // Course 3 = "point transmis" → doit être dans un secteur encore différent
-  const usedQuadrants = new Set([
-    state.poi2._fictional ? null : getQuadrant(state.poi2),
-    getQuadrant(state.poi1)
-  ]);
+  /* ── 4. Boucle en 3 secteurs de 120° ─────────────────────────────
+     Angle de départ aléatoire → boucle différente à chaque mission.
+     Chaque secteur couvre 120°. On cherche dans chaque secteur le POI
+     dont la distance est la plus proche de segTarget.
+  ── */
+  const TWO_PI = Math.PI * 2;
+  const startAngle = Math.random() * TWO_PI;
 
-  const candidates3 = unique.filter(p => {
-    const q = getQuadrant(p);
-    const key = `${p.lat.toFixed(3)},${p.lon.toFixed(3)}`;
-    const dFrom1 = haversine(state.poi1.lat, state.poi1.lon, p.lat, p.lon);
-    const dFrom2 = haversine(state.poi2.lat, state.poi2.lon, p.lat, p.lon);
-    return !usedQuadrants.has(q) && dFrom1 > 200 && dFrom2 > 200;
-  });
+  function sectorContains(bearing, sectorStart, sectorEnd) {
+    const s = (sectorStart + TWO_PI) % TWO_PI;
+    const e = (sectorEnd   + TWO_PI) % TWO_PI;
+    if (s <= e) return bearing >= s && bearing <= e;
+    return bearing >= s || bearing <= e; // wrap autour de 0/2π
+  }
 
-  // Fallback : n'importe quel POI à >300m de poi1 ET poi2
-  const fallback3 = unique.filter(p => {
-    const dFrom1 = haversine(state.poi1.lat, state.poi1.lon, p.lat, p.lon);
-    const dFrom2 = haversine(state.poi2.lat, state.poi2.lon, p.lat, p.lon);
-    return dFrom1 > 300 && dFrom2 > 300;
-  });
+  function bestInSector(sStart, sEnd, exclude) {
+    return scored
+      .filter(({ p, d, bearing }) => {
+        if (exclude.has(`${p.lat.toFixed(3)},${p.lon.toFixed(3)}`)) return false;
+        if (!sectorContains(bearing, sStart, sEnd)) return false;
+        return d >= segTarget * 0.4 && d <= segTarget * 1.7;
+      })
+      .sort((a, b) => Math.abs(a.d - segTarget) - Math.abs(b.d - segTarget));
+  }
 
-  state.poi3 = candidates3.length
-    ? pick(candidates3)
-    : fallback3.length
-      ? pick(fallback3)
-      : generateFictionalPOI(state.lat, state.lng, state.poi2);
+  const usedKeys = new Set();
+  function pickAndMark(candidates, fallbackAngle) {
+    const top = candidates.slice(0, 3);
+    if (top.length > 0) {
+      const chosen = top[Math.floor(Math.random() * top.length)];
+      usedKeys.add(`${chosen.p.lat.toFixed(3)},${chosen.p.lon.toFixed(3)}`);
+      return chosen.p;
+    }
+    // Fallback fictif dans le bon secteur
+    demo = true;
+    const d = segTarget / 1.25 / 111000;
+    const p = {
+      tags: { name: 'Point de mission' },
+      lat: state.lat + d * Math.cos(fallbackAngle),
+      lon: state.lng + d * Math.sin(fallbackAngle),
+      _fictional: true
+    };
+    usedKeys.add(`${p.lat.toFixed(3)},${p.lon.toFixed(3)}`);
+    return p;
+  }
+
+  // Secteur 1 : startAngle → startAngle+120°
+  const s1start = startAngle,              s1end = (startAngle + TWO_PI/3)   % TWO_PI;
+  // Secteur 2 : startAngle+120° → startAngle+240°
+  const s2start = (startAngle + TWO_PI/3)   % TWO_PI, s2end = (startAngle + TWO_PI*2/3) % TWO_PI;
+  // Secteur 3 : startAngle+240° → startAngle+360° (orienté retour)
+  const s3start = (startAngle + TWO_PI*2/3) % TWO_PI, s3end = startAngle;
+
+  showLoading('Construction de la boucle…');
+  state.poi1 = pickAndMark(bestInSector(s1start, s1end, usedKeys), startAngle + Math.PI/3);
+  state.poi2 = pickAndMark(bestInSector(s2start, s2end, usedKeys), startAngle + Math.PI);
+  state.poi3 = pickAndMark(bestInSector(s3start, s3end, usedKeys), startAngle + Math.PI*5/3);
+
+  console.log(`[Mission] poi1="${state.poi1.tags.name}" | poi2="${state.poi2.tags.name}" | poi3="${state.poi3.tags.name}"`);
+  console.log(`[Mission] Secteurs: ${Math.round(s1start*180/Math.PI)}°-${Math.round(s1end*180/Math.PI)}° | ${Math.round(s2start*180/Math.PI)}°-${Math.round(s2end*180/Math.PI)}° | ${Math.round(s3start*180/Math.PI)}°-${Math.round(s3end*180/Math.PI)}°`);
+
+  /* ── 5. Distance réelle totale (arrière-plan) ── */
+  state.realDistanceM = null;
+  getRouteDistance(state.lat, state.lng, state.poi1, state.poi2, state.poi3)
+    .then(d => {
+      state.realDistanceM = d;
+      console.log(`[OSRM] Distance totale: ${(d/1000).toFixed(2)}km (cible: ${targetKm}km)`);
+    });
 
   state.isDemo = demo;
-  console.log(`[Mission] poi1="${state.poi1.tags.name}" | poi2="${state.poi2.tags.name}" | poi3="${state.poi3.tags.name}"`);
-
   hideLoading();
   if (demo) {
     document.getElementById('demo-badge').classList.add('show');
-    showToast('Mode démo', 'Réseau indisponible — POIs fictifs activés.', 4500);
+    showToast('Mode démo', 'POIs fictifs activés — zone peu dense.', 4000);
   }
   populateBriefing();
   goTo('screen-briefing');
@@ -1461,10 +1710,10 @@ function buildScreenQueue() {
 /* ──────────────────────────────────────────────────────────────────────────
    advanceMission — renders the current step and shows its screen
    ────────────────────────────────────────────────────────────────────────── */
-function advanceMission() {
+async function advanceMission() {
   // End condition
   if (state.screenIndex >= state.screenQueue.length) {
-    completeMission();
+    await completeMission();
     return;
   }
 
@@ -1683,29 +1932,36 @@ async function newPOI() {
 /* ============================================================
    FIN DE MISSION
    ============================================================ */
-function completeMission() {
+async function completeMission() {
   const elapsed = Math.round((Date.now() - (state.startTime||Date.now())) / 60000);
 
-  // Distance réelle estimée = trajet complet départ→poi1→poi2→départ
-  // × 1.4 (tortuosité urbaine : les rues ne sont jamais en ligne droite)
-  const TORTUOSITY = 1.4;
-  const seg1 = state.poi1 ? haversine(state.lat, state.lng, state.poi1.lat, state.poi1.lon) : 0;
-  const seg2 = (state.poi1 && state.poi2) ? haversine(state.poi1.lat, state.poi1.lon, state.poi2.lat, state.poi2.lon) : 0;
-  const seg3 = (state.poi2 && state.poi3) ? haversine(state.poi2.lat, state.poi2.lon, state.poi3.lat, state.poi3.lon) : 0;
-  const seg4 = state.poi3 ? haversine(state.poi3.lat, state.poi3.lon, state.lat, state.lng) : 0;
-  const totalM = Math.round((seg1 + seg2 + seg3 + seg4) * TORTUOSITY);
-
   document.getElementById('end-time').textContent = elapsed || '<1';
-  document.getElementById('end-dist').textContent = totalM >= 1000
-    ? (totalM / 1000).toFixed(1) + ' km'
-    : totalM + ' m';
   document.getElementById('end-poi').textContent  = MISSION.name || 'Mission accomplie';
   document.getElementById('end-timestamp').textContent = 'OP-COMPLETED: ' + new Date().toLocaleTimeString('fr-FR');
 
-  // Met aussi à jour le label de l'unité
-  const lbl = document.querySelector('#end-dist + .end-stat-lbl, .end-stat-lbl');
+  // Utilise la distance OSRM calculée au début de mission si disponible
+  // sinon recalcule maintenant
+  let totalM = state.realDistanceM;
+  if (!totalM) {
+    if (state.poi1 && state.poi2 && state.poi3) {
+      totalM = await getRouteDistance(state.lat, state.lng, state.poi1, state.poi2, state.poi3);
+    } else {
+      // Fallback haversine × 1.25
+      const s1 = state.poi1 ? haversine(state.lat, state.lng, state.poi1.lat, state.poi1.lon) : 0;
+      const s2 = (state.poi1 && state.poi2) ? haversine(state.poi1.lat, state.poi1.lon, state.poi2.lat, state.poi2.lon) : 0;
+      const s3 = (state.poi2 && state.poi3) ? haversine(state.poi2.lat, state.poi2.lon, state.poi3.lat, state.poi3.lon) : 0;
+      const s4 = state.poi3 ? haversine(state.poi3.lat, state.poi3.lon, state.lat, state.lng) : 0;
+      totalM = (s1 + s2 + s3 + s4) * 1.25;
+    }
+  }
+
+  const distLabel = totalM >= 1000
+    ? (totalM / 1000).toFixed(1) + ' km'
+    : Math.round(totalM) + ' m';
+  document.getElementById('end-dist').textContent = distLabel;
+
   const distLbl = document.getElementById('end-dist')?.closest('.end-stat')?.querySelector('.end-stat-lbl');
-  if (distLbl) distLbl.textContent = 'Distance estimée';
+  if (distLbl) distLbl.textContent = 'Distance réelle';
 
   goTo('screen-end');
 }
@@ -1716,7 +1972,7 @@ function completeMission() {
 function resetMission() {
   document.querySelectorAll('audio').forEach(a=>{ a.pause(); a.currentTime=0; });
   window.speechSynthesis?.cancel();
-  Object.assign(state, {address:'',lat:null,lng:null,poi1:null,poi2:null,poi3:null,startTime:null,isDemo:false});
+  Object.assign(state, {address:'',lat:null,lng:null,poi1:null,poi2:null,poi3:null,startTime:null,isDemo:false,realDistanceM:null});
   document.getElementById('address-input').value = '';
   document.getElementById('address-suggestions').innerHTML = '';
   document.getElementById('demo-badge').classList.remove('show');
