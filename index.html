@@ -2286,12 +2286,23 @@ function getTileLayer() {
 }
 
 // Appelé par advanceMission quand un screen-move s'affiche
-function initMapForMove(idx) {
+function initMapForMove(moveNum) {
   if (!window.L) { console.warn('[MAP] Leaflet non chargé'); return; }
-  const poi = idx === 1 ? state.poi1 : idx === 2 ? state.poi2 : state.poi3;
+
+  // POI selon le numéro de course (1, 2, 3, 4)
+  const poi = moveNum === 1 ? state.poi1
+            : moveNum === 2 ? state.poi2
+            : moveNum === 3 ? state.poi3
+            : { lat: state.lat, lon: state.lng, tags: { name: 'Point de départ' } };
   if (!poi) return;
-  // Légère attente pour que le DOM soit rendu
-  setTimeout(() => _initMap(idx, poi), 200);
+
+  // DOM id : move 1 → map-1, moves 2/3/4 → map-2 (screen-move2 réutilisé)
+  const domIdx = moveNum === 1 ? 1 : 2;
+
+  // Stocke le moveNum courant pour le plein écran
+  mapState.currentMoveNum = moveNum;
+
+  setTimeout(() => _initMap(domIdx, poi), 200);
 }
 
 async function _initMap(idx, poi) {
@@ -2366,7 +2377,8 @@ async function _drawRoute(map, idx, fromLat, fromLng, toLat, toLng) {
     const distM = data.paths[0].distance;
     const distTxt = distM >= 1000 ? (distM/1000).toFixed(1)+' km' : Math.round(distM)+' m';
     const timeMin = Math.round(data.paths[0].time / 60000);
-    mapState[`dist${idx}`] = `${distTxt} · ~${timeMin} min à pied`;
+    const mn = mapState.currentMoveNum || idx;
+    mapState[`dist${mn}`] = `${distTxt} · ~${timeMin} min à pied`;
     console.log(`[MAP] Route idx=${idx}: ${distTxt}`);
   } catch(e) {
     console.warn('[MAP] GraphHopper KO:', e.message);
@@ -2384,12 +2396,16 @@ function openFullscreenMap(idx) {
   modal.style.display = 'flex';
   mapState.fsMoveIdx = idx;
 
-  const poi = idx === 1 ? state.poi1 : idx === 2 ? state.poi2 : state.poi3;
+  const moveNum = mapState.currentMoveNum || idx;
+  const poi = moveNum === 1 ? state.poi1
+            : moveNum === 2 ? state.poi2
+            : moveNum === 3 ? state.poi3
+            : { lat: state.lat, lon: state.lng, tags: { name: 'Point de départ' } };
   if (poi) {
     document.getElementById('fs-poi-name').textContent = poi.tags?.name || 'Destination';
   }
   const distEl = document.getElementById('fs-distance');
-  if (distEl) distEl.textContent = mapState[`dist${idx}`] || 'Calcul en cours...';
+  if (distEl) distEl.textContent = mapState[`dist${moveNum}`] || 'Calcul en cours...';
 
   // Init carte plein écran
   setTimeout(async () => {
