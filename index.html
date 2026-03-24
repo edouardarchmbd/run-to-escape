@@ -1332,65 +1332,71 @@ const POI_QUERIES = [
 
 /* Cherche des POIs via Nominatim autour d'un point */
 async function fetchPOIsNominatim(lat, lng, radiusM) {
-  const deg = (radiusM * 1.5) / 111000; // viewbox généreux
-  const viewbox = `${lng-deg},${lat-deg},${lng+deg},${lat+deg}`;
+  // Utilise Photon (Komoot) — même données OSM, pas de User-Agent requis, CORS ok
+  // Photon supporte bbox: left,bottom,right,top
+  const deg = (radiusM * 1.6) / 111000;
+  const bbox = `${lng-deg},${lat-deg},${lng+deg},${lat+deg}`;
 
-  // Timeout global sur l'ensemble des requêtes parallèles : 8s max
-  const timeoutPromise = new Promise((_, reject) =>
-    setTimeout(() => reject(new Error('Nominatim timeout')), 8000)
-  );
+  function fetchWithTimeout(url, ms) {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), ms);
+    return fetch(url, { signal: ctrl.signal }).finally(() => clearTimeout(t));
+  }
 
-  const searchPromise = Promise.all(
-    POI_QUERIES.map(type =>
-      fetch(
-        `https://nominatim.openstreetmap.org/search?format=json&limit=8` +
-        `&q=${encodeURIComponent(type)}&viewbox=${viewbox}&bounded=1`,
-        { headers: {
-            'Accept-Language': 'fr',
-            'User-Agent': 'RunToEscape/1.0 (https://edouardarchmbd.github.io/run-to-escape/)',
-            'Referer': 'https://edouardarchmbd.github.io/'
-        }}
-      ).then(r => r.ok ? r.json() : []).catch(() => [])
-    )
-  );
+  // Lance une recherche par type de lieu via Photon
+  async function searchPhoton(type) {
+    try {
+      const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(type)}&bbox=${bbox}&limit=6&lang=fr`;
+      const r = await fetchWithTimeout(url, 6000);
+      if (!r.ok) return [];
+      const data = await r.json();
+      return (data.features || []).map(f => ({
+        tags: { name: f.properties.name || f.properties.street || type },
+        lat: f.geometry.coordinates[1],
+        lon: f.geometry.coordinates[0],
+        _source: 'photon'
+      })).filter(p => p.tags.name && p.lat && p.lon);
+    } catch(e) { return []; }
+  }
 
-  const results = await Promise.race([searchPromise, timeoutPromise]);
-  const flat = results.flat();
+  // Fallback : Nominatim via proxy
+  async function searchNominatimProxy(type) {
+    try {
+      const q = `${type} near ${lat},${lng}`;
+      const nominatimUrl = `https://nominatim.openstreetmap.org/search?format=json&limit=5&q=${encodeURIComponent(type)}&viewbox=${bbox}&bounded=1`;
+      const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(nominatimUrl)}`;
+      const r = await fetchWithTimeout(proxyUrl, 6000);
+      if (!r.ok) return [];
+      const data = await r.json();
+      return (data || []).map(item => ({
+        tags: { name: item.display_name?.split(',')[0]?.trim() || type },
+        lat: +item.lat,
+        lon: +item.lon,
+        _source: 'nominatim-proxy'
+      })).filter(p => p.tags.name && p.lat && p.lon);
+    } catch(e) { return []; }
+  }
 
+  // Essaie Photon en premier, fallback proxy si rien
+  const photonResults = await Promise.all(POI_QUERIES.map(t => searchPhoton(t)));
+  let flat = photonResults.flat();
+
+  if (flat.length < 3) {
+    console.log('[POI] Photon insuffisant, essai proxy Nominatim...');
+    const proxyResults = await Promise.all(POI_QUERIES.slice(0, 4).map(t => searchNominatimProxy(t)));
+    flat = [...flat, ...proxyResults.flat()];
+  }
+
+  // Dédoublonne et filtre par distance
   const seen = new Set();
-  const pois = flat
-    .filter(r => {
-      if (!r.display_name) return false;
-      // Dédoublonne par osm_id ET par coordonnées arrondies (évite doublons proches)
-      const coordKey = `${(+r.lat).toFixed(4)},${(+r.lon).toFixed(4)}`;
-      if (seen.has(r.osm_id) || seen.has(coordKey)) return false;
-      seen.add(r.osm_id);
-      seen.add(coordKey);
-      return true;
-    })
-    .map(r => {
-      // Nom affiché : préfère le nom OSM (type "Parc des Sports") plutôt que l'adresse
-      // r.name existe pour les lieux nommés, sinon on prend la première partie du display_name
-      const parts = r.display_name.split(',');
-      // Évite les noms qui ressemblent à une adresse (commencent par un chiffre)
-      const firstName = parts[0].trim();
-      const secondName = parts[1]?.trim() || '';
-      const name = /^\d/.test(firstName) && secondName
-        ? `${secondName}${parts[2] ? ', ' + parts[2].trim() : ''}`
-        : firstName;
-      return {
-        tags: { name: name.slice(0, 60) }, // 60 chars max
-        lat: +r.lat, lon: +r.lon,
-        _fullName: r.display_name,
-        _source: 'nominatim'
-      };
-    })
-    .filter(p => {
-      const d = haversine(lat, lng, p.lat, p.lon);
-      return d >= 100 && d <= radiusM * 1.5;
-    });
-
-  return pois;
+  return flat.filter(p => {
+    if (!p.tags?.name || p.lat == null) return false;
+    const key = `${p.lat.toFixed(3)},${p.lon.toFixed(3)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    const d = haversine(lat, lng, p.lat, p.lon);
+    return d >= 100 && d <= radiusM * 1.6;
+  });
 }
 
 const OVERPASS_ENDPOINTS = [
@@ -1420,41 +1426,28 @@ async function fetchPOIsOverpass(lat, lng, rMax) {
 }
 
 async function fetchPOIs(lat, lng, rMin, rMax) {
-  showLoading('Recherche des points d\'intérêt…');
-  console.log(`[fetchPOIs] lat=${lat} lng=${lng} rMin=${rMin} rMax=${rMax}`);
+  console.log(`[fetchPOIs] lat=${lat} lng=${lng} rMax=${rMax}`);
 
-  // ── 1. Nominatim ───────────────────────────────────────────
+  // ── 1. Photon/Nominatim via fetchPOIsNominatim ──────────────
   try {
     const pois = await fetchPOIsNominatim(lat, lng, rMax);
-    console.log(`[Nominatim] ${pois.length} POIs dans le rayon élargi`);
-    if (pois.length > 0) {
-      // Tri par distance, on prend ceux dans rMin–rMax en priorité
-      // mais si aucun, on relaxe rMin à 0 pour ne pas bloquer
-      const strict = pois.filter(p => {
-        const d = haversine(lat, lng, p.lat, p.lon);
-        return d >= rMin && d <= rMax;
-      });
-      const relaxed = strict.length > 0 ? strict : pois;
-      console.log(`[Nominatim] ${strict.length} strict / ${relaxed.length} relaxed`);
-      return relaxed;
-    }
+    console.log(`[fetchPOIs] ${pois.length} POIs Photon/Nominatim`);
+    if (pois.length > 0) return pois; // retourne tout, le caller filtre
   } catch(e) {
-    console.warn('[Nominatim]', e.message);
+    console.warn('[fetchPOIs] Photon/Nominatim KO:', e.message);
   }
 
   // ── 2. Overpass fallback ────────────────────────────────────
-  showLoading('Recherche alternative…');
-  const oPois = await fetchPOIsOverpass(lat, lng, rMax);
-  const filtered = oPois.filter(e => {
-    const d = haversine(lat, lng, e.lat, e.lon);
-    return d >= rMin && d <= rMax;
-  });
-  if (filtered.length > 0) return filtered;
+  showLoading('Recherche Overpass…');
+  try {
+    const oPois = await fetchPOIsOverpass(lat, lng, rMax);
+    console.log(`[fetchPOIs] ${oPois.length} POIs Overpass`);
+    if (oPois.length > 0) return oPois;
+  } catch(e) {
+    console.warn('[fetchPOIs] Overpass KO:', e.message);
+  }
 
-  // ── 3. Overpass sans filtre de distance min (zone peu dense) ─
-  if (oPois.length > 0) return oPois;
-
-  throw new Error('Aucun POI trouvé');
+  throw new Error('Aucun POI trouvé (Photon + Overpass KO)');
 }
 
 function demoPOIs(lat, lng, rMin, rMax) {
