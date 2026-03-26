@@ -854,15 +854,30 @@ const BGM = {
 };
 
 function bgmInit(ep) {
-  /* Charge les 3 pistes (ou fallback si fichiers manquants) */
+  /* Pour le proto : un seul fichier (Suspense.mp3) pour les 3 états.
+     Quand les vrais fichiers ambiance existent, src[state] les utilisera. */
   const src = ep.bgm;
+  const fallback = src.fallback;
+
   ['neutre','tendu','critique'].forEach(state => {
     const a = new Audio();
     a.loop = true; a.volume = 0;
-    a.src = src[state] || src.fallback;
+    // Essaie le fichier spécifique ; si absent ou vide, utilise le fallback
+    const url = src[state] && src[state] !== '' ? src[state] : fallback;
+    a.src = url;
+    a.onerror = () => { if (a.src !== fallback) { a.src = fallback; a.load(); } };
     a.load();
     BGM.audios[state] = a;
   });
+
+  /* En mode proto, les 3 états pointent tous vers Suspense.mp3
+     → on les unifie sur une seule instance pour éviter 3x la même boucle */
+  const allSame = ['neutre','tendu','critique'].every(s => BGM.audios[s].src === BGM.audios['neutre'].src);
+  if (allSame) {
+    const shared = BGM.audios['neutre'];
+    BGM.audios['tendu']    = shared;
+    BGM.audios['critique'] = shared;
+  }
 }
 
 function bgmPlay() {
@@ -888,7 +903,12 @@ function bgmSetState(newState) {
   const next = BGM.audios[newState];
   BGM.currentState = newState;
   if (!BGM.playing) return;
-  /* Fade out ancien, fade in nouveau */
+  /* Si même instance (mode proto fichier unique) : juste ajuster le volume */
+  if (prev === next) {
+    bgmFadeSingle(next, BGM.VOLS[newState], BGM.TRANSITION_MS);
+    return;
+  }
+  /* Sinon crossfade */
   bgmFadeSingle(prev, 0, BGM.TRANSITION_MS, () => prev.pause());
   next.currentTime = 0;
   next.play().catch(() => {});
@@ -918,7 +938,10 @@ function bgmFadeSingle(audio, target, ms, onDone) {
 }
 
 function bgmStop() {
-  Object.values(BGM.audios).forEach(a => { bgmFadeSingle(a, 0, 400, () => a.pause()); });
+  const seen = new Set();
+  Object.values(BGM.audios).forEach(a => {
+    if (!seen.has(a)) { seen.add(a); bgmFadeSingle(a, 0, 400, () => a.pause()); }
+  });
   BGM.playing = false;
 }
 
@@ -1628,7 +1651,7 @@ function resetMission() {
   stopGPSForRun();
   window.speechSynthesis?.cancel();
   if (RUN.voiceAudio) { RUN.voiceAudio.pause(); RUN.voiceAudio = null; }
-  if (BGM.audio) { bgmFade(0, 500); setTimeout(() => { BGM.audio.pause(); BGM.playing = false; }, 600); }
+  bgmStop();
 
   Object.assign(RUN, {
     ep:null, targetM:0, startTime:0, track:[], lastPos:null, distanceM:0,
